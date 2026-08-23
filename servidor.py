@@ -200,6 +200,7 @@ def main():
 
             # Payload rico contendo dados detalhados por faixa + chaves legadas para compatibilidade
             payload = {
+                "tipo": "audio",
                 "faixas": faixas_resultado,
                 # Atalhos diretos para compatibilidade com versões anteriores
                 "graves": faixas_resultado["graves"]["valor"],
@@ -208,6 +209,7 @@ def main():
                 "agudos": faixas_resultado["agudos"]["valor"],
                 "super_agudos": faixas_resultado["super_agudos"]["valor"],
             }
+
 
             mensagem = json.dumps(payload).encode("utf-8")
             sock.sendto(mensagem, ("<broadcast>", PORTA_UDP))

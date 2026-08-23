@@ -1,0 +1,21 @@
+# Ambientes Virtuais
+venv/
+.venv/
+env/
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*.class
+
+# Credenciais e Tokens
+.env
+.cache
+.cache-*
+.spotipyoauthcache
+
+# IDE e Sistema
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

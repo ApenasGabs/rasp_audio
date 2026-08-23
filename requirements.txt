@@ -1,0 +1,4 @@
+spotipy>=2.24.0
+python-dotenv>=1.0.0
+numpy>=1.24.0
+pyaudio>=0.2.13

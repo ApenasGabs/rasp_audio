@@ -112,10 +112,20 @@ try:
         # 3. MATRIZ DE DECISÃO (AÇÃO NO HARDWARE)
         # ---------------------------------------------------------
 
-        # MODO STANDBY: Spotify pausado
+        # MODO STANDBY: Spotify pausado ou sem música
         if modo_atual == "standby":
-            strobe_grave.ChangeDutyCycle(0)
-            GPIO.output(TREBLE_PIN, GPIO.LOW)
+            # Se mesmo em standby o microfone captar batidas fortes no ambiente, responde pelo reflexo
+            if ativo_grave or pico_grave or nivel_grave >= 0.45:
+                fim_efeito_grave = max(fim_efeito_grave, agora + SUSTENTACAO_GRAVE)
+                strobe_grave.ChangeDutyCycle(45)
+            elif agora >= fim_efeito_grave:
+                strobe_grave.ChangeDutyCycle(0)
+
+            if pico_agudo or (ativo_agudo and nivel_agudo >= 0.50):
+                fim_flash_agudo = max(fim_flash_agudo, agora + SUSTENTACAO_AGUDO)
+                GPIO.output(TREBLE_PIN, GPIO.HIGH)
+            elif agora >= fim_flash_agudo:
+                GPIO.output(TREBLE_PIN, GPIO.LOW)
             continue
 
         # MODO SUAVE: Música acústica, lofi, calma (energia < 0.40)
@@ -127,6 +137,7 @@ try:
                 fim_efeito_grave = agora + SUSTENTACAO_GRAVE
             elif agora >= fim_efeito_grave:
                 strobe_grave.ChangeDutyCycle(0)
+
 
             # Agudo: Ativa apenas em pratos muito nítidos e suaves
             if pico_agudo and nivel_agudo >= 0.70:

@@ -11,12 +11,11 @@ try:
 except (ImportError, RuntimeError):
     pass
 
-from drivers_hardware import LuzDigital, LuzPWM, GloboRGB, MotorPonteH
+from drivers_hardware import LuzDigital, LuzPWM, GloboRGB, MotorBidirecional
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config_hardware.json")
 
-# Carrega configuração de pinos
 config = {}
 if os.path.exists(CONFIG_PATH):
     try:
@@ -32,16 +31,22 @@ p_laser_r = pinos.get("laser_vermelho", {}).get("bcm", 22)
 p_globo_r = pinos.get("globo_r", {}).get("bcm", 23)
 p_globo_g = pinos.get("globo_g", {}).get("bcm", 24)
 p_globo_b = pinos.get("globo_b", {}).get("bcm", 25)
-p_mot_laser = pinos.get("motor_laser_filtro", {}).get("bcm", 18)
-p_mot_globo = pinos.get("motor_globo", {}).get("bcm", 26)
+
+# Pinos Bidirecionais da Ponte H (IN1 / IN2)
+p_mot_laser_in1 = pinos.get("motor_laser_filtro", {}).get("bcm_in1", 18)
+p_mot_laser_in2 = pinos.get("motor_laser_filtro", {}).get("bcm_in2", 13)
+
+p_mot_globo_in1 = pinos.get("motor_globo", {}).get("bcm_in1", 26)
+p_mot_globo_in2 = pinos.get("motor_globo", {}).get("bcm_in2", 19)
 
 # Inicializa os Dispositivos de Hardware
 strobe_branco = LuzPWM(p_strobe, freq_hz=15, nome="Strobe Branco")
 laser_verde = LuzDigital(p_laser_g, nome="Laser Verde")
 laser_vermelho = LuzDigital(p_laser_r, nome="Laser Vermelho")
 globo_rgb = GloboRGB(p_globo_r, p_globo_g, p_globo_b, freq_hz=100)
-motor_laser = MotorPonteH(p_mot_laser, freq_hz=1000, nome="Motor Filtro Laser")
-motor_globo = MotorPonteH(p_mot_globo, freq_hz=1000, nome="Motor Globo")
+
+motor_laser = MotorBidirecional(p_mot_laser_in1, p_mot_laser_in2, freq_hz=1000, nome="Filtro Laser (Ponte H)")
+motor_globo = MotorBidirecional(p_mot_globo_in1, p_mot_globo_in2, freq_hz=1000, nome="Globo Giratorio (Ponte H)")
 
 # Configuração da Rede UDP
 PORTA_UDP = 5005
@@ -52,11 +57,12 @@ if hasattr(socket, "SO_REUSEPORT"):
 sock.bind(("", PORTA_UDP))
 
 print("==========================================================")
-print(" Orquestrador de Iluminação Multi-Canais Iniciado")
+print(" Orquestrador de Iluminação Multi-Canais & Bidirecional")
 print(f" - Strobe Branco: GPIO {p_strobe} (PWM 15Hz)")
 print(f" - Lasers Verde / Vermelho: GPIO {p_laser_g} / GPIO {p_laser_r}")
 print(f" - Globo RGB: GPIO R:{p_globo_r} G:{p_globo_g} B:{p_globo_b}")
-print(f" - Motores (Ponte H): Filtro Laser:{p_mot_laser} | Globo:{p_mot_globo}")
+print(f" - Motor Filtro Laser: IN1:{p_mot_laser_in1} / IN2:{p_mot_laser_in2} (Bidirecional)")
+print(f" - Motor Globo Giratório: IN1:{p_mot_globo_in1} / IN2:{p_mot_globo_in2} (Bidirecional)")
 print(" Aguardando pacotes UDP de Áudio e Spotify...")
 print("==========================================================")
 
@@ -72,6 +78,9 @@ contexto_spotify = {
 }
 
 ultimo_ciclo = time.time()
+ultimo_inversao_globo = time.time()
+direcao_globo = 1
+contador_kicks = 0
 
 try:
     while True:
@@ -126,57 +135,72 @@ try:
 
         pico_super = dados_super_agudos.get("pico", False)
 
-        # 4. COREOGRAFIA DOS ATUADORES (A MATRIZ DE DECISÃO)
+        # 4. COREOGRAFIA DOS ATUADORES
 
         # --- A. CONTROLE DO GLOBO RGB ---
         globo_rgb.definir_paleta_contextual(modo_atual, nivel_medios, agora)
 
-        # --- B. CONTROLE DOS MOTORES (PONTE H) ---
+        # --- B. CONTROLE BIDIRECIONAL DOS MOTORES (PONTE H) ---
+        
+        # Gerenciamento de inversão do Globo (Sweep / Vai e Volta periódico ou por batida)
+        tempo_varredura = 4.0 if modo_atual == "alta_energia" else 6.5
+        if agora - ultimo_inversao_globo >= tempo_varredura:
+            direcao_globo = -1 if direcao_globo == 1 else 1
+            ultimo_inversao_globo = agora
+
+        # Inversão de impacto no Drop / Kicks pesados
+        if pico_grave and nivel_grave >= 0.85:
+            contador_kicks += 1
+            if contador_kicks >= 4:  # A cada 4 batidas fortes inverte sentido
+                direcao_globo = -1 if direcao_globo == 1 else 1
+                contador_kicks = 0
+                ultimo_inversao_globo = agora
+
         if modo_atual == "alta_energia":
-            motor_globo.definir_velocidade(100.0)
-            # Acelera o filtro óptico do laser nos ataques de agudo
-            vel_laser = 100.0 if (ativo_agudo or pico_agudo) else 70.0
-            motor_laser.definir_velocidade(vel_laser)
+            # Globo: velocidade total alternando direção
+            motor_globo.definir_movimento(100.0, direcao_globo)
+            # Filtro do Laser: oscilação rápida rítmica (vai e volta a 2.5Hz)
+            motor_laser.oscilar_senoidal(freq_hz=2.5, velocidade_max_pct=100.0, tempo_atual=agora)
 
         elif modo_atual == "suave":
-            motor_globo.definir_velocidade(20.0)
-            motor_laser.definir_velocidade(0.0)
+            # Movimento calmo e suave (vai e volta lento)
+            motor_globo.definir_movimento(25.0, direcao_globo)
+            motor_laser.definir_movimento(0.0, 0)
 
         elif modo_atual == "standby":
             if ativo_grave or pico_grave or ativo_agudo:
-                # Se houver som no ambiente mesmo em standby, aciona motor em velocidade moderada
-                motor_globo.definir_velocidade(45.0)
-                motor_laser.definir_velocidade(35.0)
+                motor_globo.definir_movimento(45.0, direcao_globo)
+                motor_laser.definir_movimento(30.0, 1)
             else:
-                motor_globo.definir_velocidade(0.0)
-                motor_laser.definir_velocidade(0.0)
+                motor_globo.definir_movimento(0.0, 0)
+                motor_laser.definir_movimento(0.0, 0)
 
         else:  # media_energia / fallback
-            motor_globo.definir_velocidade(55.0)
-            motor_laser.definir_velocidade(45.0 if ativo_agudo else 30.0)
+            motor_globo.definir_movimento(60.0, direcao_globo)
+            # Filtro do laser acompanha pratos ou oscila suavemente a 1.2Hz
+            if ativo_agudo or pico_agudo:
+                motor_laser.oscilar_senoidal(freq_hz=1.8, velocidade_max_pct=75.0, tempo_atual=agora)
+            else:
+                motor_laser.definir_movimento(35.0, 1)
 
         # --- C. CONTROLE DO STROBE BRANCO (GRAVES / KICK) ---
         if modo_atual == "suave":
-            # Sem estrobo agressivo em músicas calmas; brilho pulsante suave
             if ativo_grave or nivel_grave > 0.3:
                 strobe_branco.pulsar(min(35.0, nivel_grave * 35.0), duracao_s=0.07)
         else:
-            # Strobe rítmico a 15Hz nas batidas de grave
             if ativo_grave or pico_grave or nivel_grave >= 0.40:
                 duty_strobe = 50.0 if modo_atual == "alta_energia" else 45.0
                 strobe_branco.pulsar(duty_strobe, duracao_s=0.07)
 
-        # --- D. CONTROLE DOS LASERS VERDE E VERMELHO (AGUDOS E ATAQUES) ---
+        # --- D. CONTROLE DOS LASERS (AGUDOS E ATAQUES) ---
         if modo_atual != "suave":
-            # Laser Verde: dispara nos pratos de agudo (Hi-Hats / Címbalos)
             if pico_agudo or (ativo_agudo and nivel_agudo >= 0.40):
                 laser_verde.pulsar(duracao_s=0.05)
 
-            # Laser Vermelho: dispara em kicks pesados, super agudos ou caixas
             if (pico_grave and nivel_grave >= 0.70) or pico_super:
                 laser_vermelho.pulsar(duracao_s=0.06)
 
-        # 5. ATUALIZAÇÃO TEMPORAL DE TODOS OS DISPOSITIVOS
+        # 5. ATUALIZAÇÃO TEMPORAL DOS ATUADORES
         strobe_branco.atualizar(agora)
         laser_verde.atualizar(agora)
         laser_vermelho.atualizar(agora)

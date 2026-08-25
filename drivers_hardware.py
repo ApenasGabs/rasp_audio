@@ -139,40 +139,79 @@ class GloboRGB:
         self.luz_b.parar()
 
 
-class MotorPonteH:
-    """Controla motores DC de efeitos (Globo e Filtro do Laser) via PWM da Ponte H."""
+class MotorBidirecional:
+    """Controla motor DC bidirecional na Ponte H (Avanço, Recuo, Rampa de Aceleração e Inversão)."""
 
-    def __init__(self, pino_bcm, freq_hz=1000, nome="MotorPonteH"):
-        self.pino = pino_bcm
+    def __init__(self, pino_in1, pino_in2, freq_hz=1000, nome="MotorBidirecional"):
+        self.pino_in1 = pino_in1
+        self.pino_in2 = pino_in2
         self.freq_hz = freq_hz
         self.nome = nome
+
+        self.direcao_atual = 0    # 1 (frente), -1 (trás), 0 (parado)
+        self.direcao_alvo = 1
         self.velocidade_atual = 0.0
         self.velocidade_alvo = 0.0
-        self.pwm = None
+
+        self.pwm_in1 = None
+        self.pwm_in2 = None
 
         if GPIO_DISPONIVEL:
-            GPIO.setup(self.pino, GPIO.OUT)
-            self.pwm = GPIO.PWM(self.pino, self.freq_hz)
-            self.pwm.start(0)
+            GPIO.setup(self.pino_in1, GPIO.OUT)
+            GPIO.setup(self.pino_in2, GPIO.OUT)
+            self.pwm_in1 = GPIO.PWM(self.pino_in1, self.freq_hz)
+            self.pwm_in2 = GPIO.PWM(self.pino_in2, self.freq_hz)
+            self.pwm_in1.start(0)
+            self.pwm_in2.start(0)
 
-    def definir_velocidade(self, velocidade_pct):
+    def definir_movimento(self, velocidade_pct, direcao=1):
+        """Define a velocidade desejada (0-100%) e direção (1=frente, -1=trás)."""
         self.velocidade_alvo = max(0.0, min(100.0, float(velocidade_pct)))
+        if direcao in [1, -1]:
+            self.direcao_alvo = direcao
+
+    def inverter_direcao(self):
+        """Inverte o sentido de rotação atual (efeito vai e volta / rebate na batida)."""
+        self.direcao_alvo = -1 if self.direcao_alvo == 1 else 1
+
+    def oscilar_senoidal(self, freq_hz, velocidade_max_pct, tempo_atual):
+        """Cria movimento contínuo e suave de vai-e-vem (sweep / oscilação rítmica)."""
+        seno = math.sin(2.0 * math.pi * freq_hz * tempo_atual)
+        direcao = 1 if seno >= 0 else -1
+        velocidade = abs(seno) * velocidade_max_pct
+        self.definir_movimento(velocidade, direcao)
 
     def atualizar(self, delta_tempo=0.025):
-        """Aceleração/Desaceleração suave para proteger os motores mecânicos."""
-        if abs(self.velocidade_atual - self.velocidade_alvo) > 1.0:
-            taxa_rampa = 80.0 * delta_tempo  # 80% de velocidade por segundo
+        """Aplica rampa suave de aceleração e proteção ao inverter o sentido da Ponte H."""
+        # Se precisa mudar de direção, primeiro desacelera até 0 antes de inverter
+        mudando_direcao = (self.direcao_atual != self.direcao_alvo and self.velocidade_atual > 5.0)
+
+        taxa_rampa = 120.0 * delta_tempo  # 120% por segundo
+
+        if mudando_direcao:
+            self.velocidade_atual = max(0.0, self.velocidade_atual - (taxa_rampa * 1.5))
+        else:
+            self.direcao_atual = self.direcao_alvo
             if self.velocidade_atual < self.velocidade_alvo:
                 self.velocidade_atual = min(self.velocidade_alvo, self.velocidade_atual + taxa_rampa)
-            else:
+            elif self.velocidade_atual > self.velocidade_alvo:
                 self.velocidade_atual = max(self.velocidade_alvo, self.velocidade_atual - taxa_rampa)
 
-            if GPIO_DISPONIVEL and self.pwm:
-                self.pwm.ChangeDutyCycle(self.velocidade_atual)
-        else:
-            self.velocidade_atual = self.velocidade_alvo
+        # Envia os sinais PWM para a Ponte H
+        if GPIO_DISPONIVEL and self.pwm_in1 and self.pwm_in2:
+            if self.direcao_atual == 1:
+                self.pwm_in2.ChangeDutyCycle(0)
+                self.pwm_in1.ChangeDutyCycle(self.velocidade_atual)
+            elif self.direcao_atual == -1:
+                self.pwm_in1.ChangeDutyCycle(0)
+                self.pwm_in2.ChangeDutyCycle(self.velocidade_atual)
+            else:
+                self.pwm_in1.ChangeDutyCycle(0)
+                self.pwm_in2.ChangeDutyCycle(0)
 
     def parar(self):
-        if GPIO_DISPONIVEL and self.pwm:
-            self.pwm.ChangeDutyCycle(0)
-            self.pwm.stop()
+        if GPIO_DISPONIVEL and self.pwm_in1 and self.pwm_in2:
+            self.pwm_in1.ChangeDutyCycle(0)
+            self.pwm_in2.ChangeDutyCycle(0)
+            self.pwm_in1.stop()
+            self.pwm_in2.stop()

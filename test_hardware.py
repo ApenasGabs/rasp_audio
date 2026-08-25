@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Script de Teste de Bancada / Hardware
-Permite acionar e validar individualmente cada laser, LED do globo e motor da Ponte H.
+Script de Teste de Bancada / Hardware Multi-Canais & Bidirecional
 """
 import time
 import os
@@ -15,7 +14,7 @@ except (ImportError, RuntimeError):
     print("ERRO: RPi.GPIO não disponível.")
     exit(1)
 
-from drivers_hardware import LuzDigital, LuzPWM, GloboRGB, MotorPonteH
+from drivers_hardware import LuzDigital, LuzPWM, GloboRGB, MotorBidirecional
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config_hardware.json")
@@ -32,76 +31,83 @@ p_laser_r = pinos.get("laser_vermelho", {}).get("bcm", 22)
 p_globo_r = pinos.get("globo_r", {}).get("bcm", 23)
 p_globo_g = pinos.get("globo_g", {}).get("bcm", 24)
 p_globo_b = pinos.get("globo_b", {}).get("bcm", 25)
-p_mot_laser = pinos.get("motor_laser_filtro", {}).get("bcm", 18)
-p_mot_globo = pinos.get("motor_globo", {}).get("bcm", 26)
+
+p_mot_laser_in1 = pinos.get("motor_laser_filtro", {}).get("bcm_in1", 18)
+p_mot_laser_in2 = pinos.get("motor_laser_filtro", {}).get("bcm_in2", 13)
+
+p_mot_globo_in1 = pinos.get("motor_globo", {}).get("bcm_in1", 26)
+p_mot_globo_in2 = pinos.get("motor_globo", {}).get("bcm_in2", 19)
 
 strobe_branco = LuzPWM(p_strobe, freq_hz=15)
 laser_verde = LuzDigital(p_laser_g)
 laser_vermelho = LuzDigital(p_laser_r)
 globo_rgb = GloboRGB(p_globo_r, p_globo_g, p_globo_b)
-motor_laser = MotorPonteH(p_mot_laser, freq_hz=1000)
-motor_globo = MotorPonteH(p_mot_globo, freq_hz=1000)
+motor_laser = MotorBidirecional(p_mot_laser_in1, p_mot_laser_in2, freq_hz=1000)
+motor_globo = MotorBidirecional(p_mot_globo_in1, p_mot_globo_in2, freq_hz=1000)
 
-print("=" * 60)
-print(" 🛠️  TESTE AUTOMÁTICO DE HARDWARE (BANCADA)")
-print("=" * 60)
+print("=" * 65)
+print(" 🛠️  TESTE DE BANCADA - HARDWARE MULTI-CANAIS & BIDIRECIONAL")
+print("=" * 65)
 
 try:
-    print("1. Testando Strobe Branco (GPIO 17) por 2 segundos...")
+    print("1. Testando Strobe Branco (GPIO 17)...")
     strobe_branco.definir_brilho(50)
-    time.sleep(2.0)
+    time.sleep(1.5)
     strobe_branco.definir_brilho(0)
 
-    print("2. Testando Laser Verde (GPIO 27) por 2 segundos...")
+    print("2. Testando Laser Verde (GPIO 27)...")
     laser_verde.ligar()
-    time.sleep(2.0)
+    time.sleep(1.5)
     laser_verde.desligar()
 
-    print("3. Testando Laser Vermelho (GPIO 22) por 2 segundos...")
+    print("3. Testando Laser Vermelho (GPIO 22)...")
     laser_vermelho.ligar()
-    time.sleep(2.0)
+    time.sleep(1.5)
     laser_vermelho.desligar()
 
-    print("4. Testando Globo LED Vermelho (GPIO 23)...")
+    print("4. Testando Cores do Globo RGB (Vermelho -> Verde -> Azul -> Branco)...")
     globo_rgb.definir_rgb(100, 0, 0)
-    time.sleep(1.5)
-
-    print("5. Testando Globo LED Verde (GPIO 24)...")
+    time.sleep(1.0)
     globo_rgb.definir_rgb(0, 100, 0)
-    time.sleep(1.5)
-
-    print("6. Testando Globo LED Azul (GPIO 25)...")
+    time.sleep(1.0)
     globo_rgb.definir_rgb(0, 0, 100)
-    time.sleep(1.5)
-
-    print("7. Testando Globo Branco (R+G+B)...")
+    time.sleep(1.0)
     globo_rgb.definir_rgb(100, 100, 100)
-    time.sleep(1.5)
+    time.sleep(1.0)
     globo_rgb.definir_rgb(0, 0, 0)
 
-    print("8. Testando Motor do Filtro do Laser (GPIO 18) a 60%...")
-    motor_laser.definir_velocidade(60)
-    for _ in range(40):
-        motor_laser.atualizar(0.05)
-        time.sleep(0.05)
-    motor_laser.definir_velocidade(0)
-    for _ in range(20):
-        motor_laser.atualizar(0.05)
-        time.sleep(0.05)
-
-    print("9. Testando Motor do Globo (GPIO 26) a 70%...")
-    motor_globo.definir_velocidade(70)
-    for _ in range(40):
-        motor_globo.atualizar(0.05)
-        time.sleep(0.05)
-    motor_globo.definir_velocidade(0)
-    for _ in range(20):
+    print("5. Testando Motor do Globo -> Sentido HORÁRIO (Avanço a 70%)...")
+    motor_globo.definir_movimento(70, direcao=1)
+    for _ in range(30):
         motor_globo.atualizar(0.05)
         time.sleep(0.05)
 
-    print("=" * 60)
-    print(" ✅ TODOS OS TESTES FORAM CONCLUÍDOS COM SUCESSO!")
-    print("=" * 60)
+    print("6. Testando Motor do Globo -> Invertendo para Sentido ANTI-HORÁRIO (Recuo a 70%)...")
+    motor_globo.inverter_direcao()
+    for _ in range(40):
+        motor_globo.atualizar(0.05)
+        time.sleep(0.05)
+    motor_globo.definir_movimento(0, 0)
+    for _ in range(15):
+        motor_globo.atualizar(0.05)
+        time.sleep(0.05)
+
+    print("7. Testando Motor do Filtro do Laser -> Oscilação Rápida (Vai e Volta a 2.5Hz)...")
+    inicio_osc = time.time()
+    while time.time() - inicio_osc < 3.0:
+        agora = time.time()
+        motor_laser.oscilar_senoidal(freq_hz=2.5, velocidade_max_pct=90.0, tempo_atual=agora)
+        motor_laser.atualizar(0.025)
+        time.sleep(0.025)
+
+    motor_laser.definir_movimento(0, 0)
+    for _ in range(10):
+        motor_laser.atualizar(0.05)
+        time.sleep(0.05)
+
+    print("=" * 65)
+    print(" ✅ TODOS OS TESTES BIDIRECIONAIS CONCLUÍDOS COM SUCESSO!")
+    print("=" * 65)
 
 except KeyboardInterrupt:
     print("\nInterrompendo teste...")

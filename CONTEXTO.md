@@ -1,17 +1,17 @@
 # 📝 CONTEXTO DO PROJETO: Audio to Light (Raspberry Pi Híbrido)
 
-Este documento fornece o **contexto completo do projeto**, arquitetura de software, pinagem detalhada dos atuadores (ULN2003 e Ponte H), métodos de acesso remoto à Raspberry Pi 3 e guia operacional.
+Este documento fornece o **contexto completo do projeto**, arquitetura de software, pinagem detalhada dos atuadores (ULN2003 e Ponte H Bidirecional), métodos de acesso remoto à Raspberry Pi 3 e guia operacional.
 
 ---
 
 ## 📌 1. Visão Geral e Objetivo
 
-Sistema de **Show de Iluminação Rítmico Inteligente (Stage Lighting Controller)** rodando em uma **Raspberry Pi 3**. O sistema analisa o áudio ambiente em tempo real e orquestra 8 canais de atuadores físicos (Lasers, Globo RGB, Strobe e Motores de efeito).
+Sistema de **Show de Iluminação Rítmico Inteligente (Stage Lighting Controller)** rodando em uma **Raspberry Pi 3**. O sistema analisa o áudio ambiente em tempo real e orquestra 8 canais de atuadores físicos (Lasers, Globo RGB, Strobe e Motores Bidirecionais de Efeito com controle de avanço, recuo, oscilação e aceleração).
 
 ### O Conceito do Sistema Híbrido:
 * **O Microfone é o "Reflexo"** (Sincronia em milissegundos): Captura o áudio via microfone USB, calcula FFT em Hz reais e aplica *Onset Detection* com Baseline Assimétrica para detectar batidas e pratos instantaneamente sem latência.
 * **A API do Spotify é o "Cérebro"** (Contexto musical): Monitora o player do usuário via `spotipy`, identifica gênero musical, nível de energia, danceabilidade e seções estruturais.
-* **O Orquestrador executa a "Matriz de Decisão"**: Modula o comportamento de cada laser, cor de LED e velocidade de motor de acordo com a energia musical.
+* **O Orquestrador executa a "Matriz de Decisão"**: Modula o comportamento de cada laser, cor de LED e aceleração/sentido dos motores de acordo com a energia musical.
 
 ---
 
@@ -25,8 +25,8 @@ Sistema de **Show de Iluminação Rítmico Inteligente (Stage Lighting Controlle
 | **🔴 Globo - Red (R)** | LED Vermelho do Globo | **GPIO 23** | Pino 16 | **ULN2003** (PWM) | Modulação de Médios / Atmosfera |
 | **🟢 Globo - Green (G)** | LED Verde do Globo | **GPIO 24** | Pino 18 | **ULN2003** (PWM) | Modulação de Médios / Atmosfera |
 | **🔵 Globo - Blue (B)** | LED Azul do Globo | **GPIO 25** | Pino 22 | **ULN2003** (PWM) | Modulação de Médios / Atmosfera |
-| **⚙️ Motor Filtro Laser**| Motor DC Filtro Óptico | **GPIO 18** | Pino 12 | **Ponte H** (PWM Velocidade) | Acelera nos pratos e alta energia |
-| **🌐 Motor Globo** | Motor DC Globo Giratório | **GPIO 26** | Pino 37 | **Ponte H** (PWM Velocidade) | Gira no ritmo geral da música |
+| **⚙️ Motor Filtro Laser**| Motor DC Filtro Óptico | **IN1: GPIO 18<br>IN2: GPIO 13** | Pino 12<br>Pino 33 | **Ponte H** (Bidirecional) | **Oscilação rápida (vai e volta a 2.5Hz)** nos pratos |
+| **🌐 Motor Globo** | Motor DC Globo Giratório | **IN1: GPIO 26<br>IN2: GPIO 19** | Pino 37<br>Pino 35 | **Ponte H** (Bidirecional) | **Varredura (Sweep vai-e-volta)** e inversão no drop |
 
 *Nota: Todas as configurações de pinos estão externalizadas em `config_hardware.json`.*
 
@@ -46,7 +46,7 @@ wsl bash -c "ssh gabs@192.168.31.3"
 # Enviar arquivos modificados (Deploy)
 wsl bash -c "scp *.py *.json gabs@192.168.31.3:~/rasp_audio/"
 
-# Teste de bancada dos componentes físicos
+# Teste de bancada bidirecional dos motores e luzes
 wsl bash -c "ssh gabs@192.168.31.3 'cd ~/rasp_audio && python3 test_hardware.py'"
 ```
 
@@ -71,38 +71,24 @@ graph TD
         NET --> C_ESP[cliente_espectro.py - Monitor Híbrido]
         
         C_LED -->|ULN2003| GPIO_ULN[Strobe BCM 17 + Lasers BCM 27/22 + Globo RGB BCM 23/24/25]
-        C_LED -->|Ponte H| GPIO_MOT[Motor Filtro BCM 18 + Motor Globo BCM 26]
+        C_LED -->|Ponte H Bidirecional| GPIO_MOT[Filtro Laser: BCM 18/13 + Globo: BCM 26/19]
     end
 ```
 
 ---
 
-## 📂 5. Estrutura dos Arquivos
+## 🎛️ 5. Coreografia dos Efeitos Musicais & Dinâmica dos Motores
 
-| Arquivo | Descrição |
-| :--- | :--- |
-| `config_hardware.json` | Mapeamento de pinos BCM, frequências PWM e parâmetros de sustentação. |
-| `drivers_hardware.py` | Classes OOP (`LuzDigital`, `LuzPWM`, `GloboRGB`, `MotorPonteH`) com temporizações não-bloqueantes. |
-| `cliente_leds.py` | Orquestrador principal dos 8 atuadores com Matriz de Decisão musical. |
-| `servidor.py` | Captura de áudio, FFT em Hz reais e detecção de picos com baseline assimétrica. |
-| `servidor_spotify.py` | Monitor de contexto Spotify com inferência de gênero e proteção anti-Rate Limit. |
-| `cliente_espectro.py` | Painel visual em ASCII com status de todos os 8 atuadores e do espectro. |
-| `test_hardware.py` | Utilitário interativo de bancada para testar cada pino/motor individualmente. |
-
----
-
-## 🎛️ 6. Coreografia dos Efeitos Musicais
-
-| Modo Spotify / Áudio | Strobe Branco (Graves) | Lasers (Verde / Vermelho) | Globo RGB (Cores) | Motores (Ponte H) |
+| Modo Spotify / Áudio | Strobe Branco (Graves) | Lasers (Verde / Vermelho) | Globo RGB (Cores) | Motores Bidirecionais (Ponte H) |
 | :--- | :--- | :--- | :--- | :--- |
-| **Alta Energia / Drop** | **Strobe Intenso 15Hz @ 50%** | **Flashes simultâneos** em agudos e transientes | **Cores Quentes & Rotação Eufórica** (Magenta, Vermelho, Ciano) | **Velocidade Máxima (100%)** |
-| **Média Energia / Versos** | Strobe Rítmico @ 45% | Disparos alternados nos pratos | Transição Suave (Violeta, Azul, Dourado) | Velocidade Moderada (50-60%) |
-| **Suave / Lofi / Acústica** | Brilho pulsante suave (sem estrobo) | Desligados (evita disparos falsos) | Tons Frios Relaxantes (Azul / Ciano) | Velocidade Mínima (20%) / Filtro 0% |
-| **Standby** | Apagado (ou reflexo se houver som físico) | Desligado | Desligado | Desligados (0%) |
+| **Alta Energia / Drop** | **Strobe Intenso 15Hz @ 50%** | **Flashes simultâneos** em agudos e transientes | **Cores Quentes & Rotação Eufórica** | **Globo:** 100% de velocidade com inversão repentina a cada 4 batidas fortes.<br>**Filtro Laser:** Oscilação rápida (vai e volta a 2.5Hz). |
+| **Média Energia / Versos** | Strobe Rítmico @ 45% | Disparos alternados nos pratos | Transição Suave (Violeta, Azul, Dourado) | **Globo:** Varredura suave (vai e volta a 60%).<br>**Filtro Laser:** Rotação suave (35-45%). |
+| **Suave / Lofi / Acústica** | Brilho pulsante suave (sem estrobo) | Desligados (evita disparos falsos) | Tons Frios Relaxantes (Azul / Ciano) | **Globo:** Movimento lento (vai e volta a 25%).<br>**Filtro Laser:** Parado (0%). |
+| **Standby** | Apagado (ou reflexo se houver som físico) | Desligado | Desligado | Parados (0%) com retorno automático se houver som. |
 
 ---
 
-## 🚀 7. Como Executar na Raspberry Pi
+## 🚀 6. Como Executar na Raspberry Pi
 
 ```bash
 cd ~/rasp_audio

@@ -35,27 +35,28 @@
             "descricao": "Globo LED Azul (ULN2003)"
         },
         "motor_laser_filtro": {
-            "bcm": 18,
-            "tipo": "pwm",
+            "bcm_in1": 18,
+            "bcm_in2": 13,
+            "tipo": "ponte_h_bidirecional",
             "freq_pwm": 1000,
-            "descricao": "Motor do Filtro do Laser (Ponte H)"
+            "descricao": "Motor do Filtro do Laser Bidirecional (Ponte H IN1/IN2)"
         },
         "motor_globo": {
-            "bcm": 26,
-            "tipo": "pwm",
+            "bcm_in1": 26,
+            "bcm_in2": 19,
+            "tipo": "ponte_h_bidirecional",
             "freq_pwm": 1000,
-            "descricao": "Motor do Globo Giratorio (Ponte H)"
+            "descricao": "Motor do Globo Giratorio Bidirecional (Ponte H IN1/IN2)"
         }
     },
     "comportamento": {
-        "sustentacao_minima_ms": {
-            "strobe_grave": 70,
-            "laser_agudo": 50,
-            "laser_vermelho": 60
+        "modos_movimento": {
+            "globo_tempo_inversao_s": 6.0,
+            "filtro_laser_oscilacao_hz": 2.5
         },
         "velocidade_motores_pct": {
-            "suave": 20,
-            "media_energia": 55,
+            "suave": 25,
+            "media_energia": 60,
             "alta_energia": 100,
             "standby": 0
         }

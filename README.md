@@ -1,110 +1,98 @@
-# 📝 CONTEXTO DO PROJETO: Audio to Light (Raspberry Pi Híbrido)
+# 📝 CONTEXTO DO PROJETO: Audio to Light (Raspberry Pi + ESP32-C3 Híbrido)
 
-Este documento fornece o **contexto completo do projeto**, arquitetura de software, pinagem detalhada dos atuadores (ULN2003 e Ponte H Bidirecional), métodos de acesso remoto à Raspberry Pi 3 e guia operacional.
+Este documento fornece o **contexto completo do projeto**, arquitetura de software, pinagem detalhada dos atuadores (ULN2003 e Ponte H Bidirecional), firmware para o microcontrolador sem fio **ESP32-C3 Super Mini**, métodos de acesso remoto à Raspberry Pi 3 e guia operacional.
 
 ---
 
 ## 📌 1. Visão Geral e Objetivo
 
-Sistema de **Show de Iluminação Rítmico Inteligente (Stage Lighting Controller)** rodando em uma **Raspberry Pi 3**. O sistema analisa o áudio ambiente em tempo real e orquestra 8 canais de atuadores físicos (Lasers, Globo RGB, Strobe e Motores Bidirecionais de Efeito com controle de avanço, recuo, oscilação e aceleração).
-
-### O Conceito do Sistema Híbrido:
-* **O Microfone é o "Reflexo"** (Sincronia em milissegundos): Captura o áudio via microfone USB, calcula FFT em Hz reais e aplica *Onset Detection* com Baseline Assimétrica para detectar batidas e pratos instantaneamente sem latência.
-* **A API do Spotify é o "Cérebro"** (Contexto musical): Monitora o player do usuário via `spotipy`, identifica gênero musical, nível de energia, danceabilidade e seções estruturais.
-* **O Orquestrador executa a "Matriz de Decisão"**: Modula o comportamento de cada laser, cor de LED e aceleração/sentido dos motores de acordo com a energia musical.
-
----
-
-## 🔌 2. Hardware e Pinagem Completa (BCM da Raspberry Pi 3)
-
-| Dispositivo / Carga | Atuador Físico | Pino BCM | Pino Físico | Driver de Potência | Comportamento Musical |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **⚪ Strobe Branco** | LED 12V Branco | **GPIO 17** | Pino 11 | **ULN2003** (PWM 15Hz) | Graves / Kicks / Sub-Bass |
-| **🟢 Laser Verde** | Diodo Laser Verde | **GPIO 27** | Pino 13 | **ULN2003** (Digital) | Agudos / Pratos / Hi-Hats |
-| **🔴 Laser Vermelho** | Diodo Laser Vermelho | **GPIO 22** | Pino 15 | **ULN2003** (Digital) | Caixas / Kicks pesados / Transientes |
-| **🔴 Globo - Red (R)** | LED Vermelho do Globo | **GPIO 23** | Pino 16 | **ULN2003** (PWM) | Modulação de Médios / Atmosfera |
-| **🟢 Globo - Green (G)** | LED Verde do Globo | **GPIO 24** | Pino 18 | **ULN2003** (PWM) | Modulação de Médios / Atmosfera |
-| **🔵 Globo - Blue (B)** | LED Azul do Globo | **GPIO 25** | Pino 22 | **ULN2003** (PWM) | Modulação de Médios / Atmosfera |
-| **⚙️ Motor Filtro Laser**| Motor DC Filtro Óptico | **IN1: GPIO 18<br>IN2: GPIO 13** | Pino 12<br>Pino 33 | **Ponte H** (Bidirecional) | **Oscilação rápida (vai e volta a 2.5Hz)** nos pratos |
-| **🌐 Motor Globo** | Motor DC Globo Giratório | **IN1: GPIO 26<br>IN2: GPIO 19** | Pino 37<br>Pino 35 | **Ponte H** (Bidirecional) | **Varredura (Sweep vai-e-volta)** e inversão no drop |
-
-*Nota: Todas as configurações de pinos estão externalizadas em `config_hardware.json`.*
+Sistema de **Show de Iluminação Rítmico Inteligente (Stage Lighting Controller)** operando de forma híbrida e modular:
+1. **Central de Processamento (Raspberry Pi 3):**
+   - **O Reflexo:** Microfone USB com FFT e Onset Detection com Baseline Assimétrica em tempo real.
+   - **O Cérebro:** Integração Spotify Web API via `spotipy` com inferência de gênero, energia e seções estruturais.
+   - **Transmissão:** Broadcast UDP de pacotes multiplexados na porta `5005` via rede Wi-Fi.
+2. **Nó Receptor de Hardware (Raspberry Pi GPIO ou ESP32-C3 Super Mini Sem Fio):**
+   - Recebe os pacotes UDP via Wi-Fi e controla os 8 canais de atuadores físicos (Lasers, Globo RGB, Strobe e Motores Bidirecionais com varredura e oscilação).
 
 ---
 
-## 🔑 3. Acesso à Raspberry Pi (Rede e Comandos)
-
-* **Endereço IP:** `192.168.31.3`
-* **Usuário:** `gabs`
-* **Diretório do Projeto na RPi:** `/home/gabs/rasp_audio`
-* **Autenticação SSH:** Chave SSH já configurada (sem senha via WSL).
-
-```bash
-# Acesso SSH direto
-wsl bash -c "ssh gabs@192.168.31.3"
-
-# Enviar arquivos modificados (Deploy)
-wsl bash -c "scp *.py *.json gabs@192.168.31.3:~/rasp_audio/"
-
-# Teste de bancada bidirecional dos motores e luzes
-wsl bash -c "ssh gabs@192.168.31.3 'cd ~/rasp_audio && python3 test_hardware.py'"
-```
-
----
-
-## 🏗️ 4. Arquitetura de Software (Produtor/Consumidor UDP :5005)
+## 🌐 2. Diagrama da Arquitetura do Sistema
 
 ```mermaid
 graph TD
-    subgraph O Reflexo (Tempo Real)
-        MIC[Microfone USB] -->|44.1kHz / 1024 chunks| S_AUD[servidor.py]
-        S_AUD -->|UDP Broadcast :5005 tipo: audio| NET((Rede UDP :5005))
+    subgraph Central (Raspberry Pi 3)
+        MIC[Microfone USB] --> S_AUD[servidor.py]
+        SP[Spotify Web API] --> S_SP[servidor_spotify.py]
+        S_AUD -->|UDP Broadcast :5005 Wi-Fi| NET((Rede Wi-Fi / UDP))
+        S_SP -->|UDP Broadcast :5005 Wi-Fi| NET
     end
 
-    subgraph O Cérebro (Contexto)
-        SP[Spotify Web API] -->|Polling 3.0s + Interpolação| S_SP[servidor_spotify.py]
-        S_SP -->|UDP Broadcast :5005 tipo: spotify| NET
+    subgraph Opção 1: Controle Direto na RPi
+        NET --> C_LED[cliente_leds.py]
+        C_LED --> GPIO_RPi[GPIO RPi: ULN2003 + Ponte H]
     end
 
-    subgraph Orquestração de Efeitos
-        NET --> C_LED[cliente_leds.py - Orquestrador Multi-Canais]
-        NET --> C_ESP[cliente_espectro.py - Monitor Híbrido]
-        
-        C_LED -->|ULN2003| GPIO_ULN[Strobe BCM 17 + Lasers BCM 27/22 + Globo RGB BCM 23/24/25]
-        C_LED -->|Ponte H Bidirecional| GPIO_MOT[Filtro Laser: BCM 18/13 + Globo: BCM 26/19]
+    subgraph Opção 2: Nó Sem Fio (ESP32-C3 Super Mini)
+        NET --> ESP[esp32_c3_node.ino]
+        ESP --> GPIO_ESP[GPIO ESP32: ULN2003 + Ponte H]
     end
 ```
 
 ---
 
-## 🎛️ 5. Coreografia dos Efeitos Musicais & Dinâmica dos Motores
+## 🔌 3. Tabela de Pinagem Comparativa (Raspberry Pi vs ESP32-C3 Super Mini)
 
-| Modo Spotify / Áudio | Strobe Branco (Graves) | Lasers (Verde / Vermelho) | Globo RGB (Cores) | Motores Bidirecionais (Ponte H) |
-| :--- | :--- | :--- | :--- | :--- |
-| **Alta Energia / Drop** | **Strobe Intenso 15Hz @ 50%** | **Flashes simultâneos** em agudos e transientes | **Cores Quentes & Rotação Eufórica** | **Globo:** 100% de velocidade com inversão repentina a cada 4 batidas fortes.<br>**Filtro Laser:** Oscilação rápida (vai e volta a 2.5Hz). |
-| **Média Energia / Versos** | Strobe Rítmico @ 45% | Disparos alternados nos pratos | Transição Suave (Violeta, Azul, Dourado) | **Globo:** Varredura suave (vai e volta a 60%).<br>**Filtro Laser:** Rotação suave (35-45%). |
-| **Suave / Lofi / Acústica** | Brilho pulsante suave (sem estrobo) | Desligados (evita disparos falsos) | Tons Frios Relaxantes (Azul / Ciano) | **Globo:** Movimento lento (vai e volta a 25%).<br>**Filtro Laser:** Parado (0%). |
-| **Standby** | Apagado (ou reflexo se houver som físico) | Desligado | Desligado | Parados (0%) com retorno automático se houver som. |
+| Dispositivo / Carga | Atuador Físico | Pino Raspberry Pi (BCM) | Pino ESP32-C3 | Driver | Tipo de Sinal |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **⚪ Strobe Branco** | LED 12V Branco | **GPIO 17** | **GPIO 0** | **ULN2003** | PWM 15Hz (Strobe no Bumbo) |
+| **🟢 Laser Verde** | Diodo Laser Verde | **GPIO 27** | **GPIO 1** | **ULN2003** | Digital (Flashes em Pratos) |
+| **🔴 Laser Vermelho** | Diodo Laser Vermelho | **GPIO 22** | **GPIO 3** | **ULN2003** | Digital (Ataques / Caixas) |
+| **🔴 Globo - Red (R)** | LED Vermelho Globo | **GPIO 23** | **GPIO 4** | **ULN2003** | PWM (Modulação de Cores) |
+| **🟢 Globo - Green (G)** | LED Verde Globo | **GPIO 24** | **GPIO 5** | **ULN2003** | PWM (Modulação de Cores) |
+| **🔵 Globo - Blue (B)** | LED Azul Globo | **GPIO 25** | **GPIO 6** | **ULN2003** | PWM (Modulação de Cores) |
+| **⚙️ Motor Filtro Laser**| Motor DC Filtro Óptico | **IN1: 18 / IN2: 13** | **IN1: 7 / IN2: 10** | **Ponte H** | **PWM Bidirecional (Oscilação a 2.5Hz)** |
+| **🌐 Motor Globo** | Motor DC Globo Giratório | **IN1: 26 / IN2: 19** | **IN1: 20 / IN2: 21**| **Ponte H** | **PWM Bidirecional (Varredura / Sweep)** |
 
 ---
 
-## 🚀 6. Como Executar na Raspberry Pi
+## 📂 4. Estrutura dos Arquivos do Repositório
 
+```
+rasp_audio/
+├── servidor.py             # Reflexo: Microfone + FFT + Detecção Rítmica
+├── servidor_spotify.py     # Cérebro: Contexto Spotify + Proteção Rate Limit
+├── cliente_leds.py         # Orquestrador local na Raspberry Pi
+├── cliente_espectro.py     # Monitor visual ASCII híbrido
+├── config_hardware.json    # Configuração de pinagem da Raspberry Pi
+├── drivers_hardware.py     # Classes de hardware (LuzPWM, GloboRGB, MotorBidirecional)
+├── test_hardware.py        # Teste de bancada interativo na Raspberry Pi
+├── esp32_c3_node/          # Nó Receptor Sem Fio para ESP32-C3 Super Mini
+│   ├── esp32_c3_node.ino   # Firmware Arduino / C++ para o ESP32-C3
+│   ├── platformio.ini      # Configuração para compilação via PlatformIO
+│   └── README.md           # Guia de gravação e ligação do ESP32-C3
+├── CONTEXTO.md             # Guia completo para desenvolvedores e IAs
+├── README.md               # Documentação principal
+├── requirements.txt        # Dependências Python
+└── .gitignore              # Proteção de credenciais (.env e .cache_spotify)
+```
+
+---
+
+## 🚀 5. Como Operar o Sistema
+
+### Cenário A: Com o ESP32-C3 Super Mini Sem Fio (Recomendado)
+1. Na **Raspberry Pi 3**, inicie os servidores:
+   ```bash
+   cd ~/rasp_audio
+   python3 servidor.py
+   python3 servidor_spotify.py
+   ```
+2. Ligue o **ESP32-C3 Super Mini** (conectado na luminária via ULN2003 e Ponte H). Ele se conectará no Wi-Fi e sincronizará automaticamente via UDP.
+
+### Cenário B: Direto na Raspberry Pi (Com Fios nos GPIOs da RPi)
 ```bash
 cd ~/rasp_audio
-
-# Teste de Bancada inicial (opcional):
-python3 test_hardware.py
-
-# Terminal 1: Captura de Áudio (Microfone)
 python3 servidor.py
-
-# Terminal 2: Contexto Spotify
 python3 servidor_spotify.py
-
-# Terminal 3: Orquestrador dos 8 Atuadores
 python3 cliente_leds.py
-
-# Terminal 4 (Opcional): Monitor Visual
-python3 cliente_espectro.py
 ```

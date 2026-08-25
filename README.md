@@ -1,145 +1,124 @@
 # 📝 CONTEXTO DO PROJETO: Audio to Light (Raspberry Pi Híbrido)
 
-Este documento foi criado para fornecer o **contexto completo do projeto**, a arquitetura de software, a pinagem de hardware, os métodos de acesso remoto à Raspberry Pi e os detalhes técnicos para que qualquer desenvolvedor ou agente de IA possa dar continuidade imediatamente.
+Este documento fornece o **contexto completo do projeto**, arquitetura de software, pinagem detalhada dos atuadores (ULN2003 e Ponte H), métodos de acesso remoto à Raspberry Pi 3 e guia operacional.
 
 ---
 
 ## 📌 1. Visão Geral e Objetivo
 
-Sistema de **Luzes Rítmicas Inteligentes (Audio-to-Light)** rodando em uma **Raspberry Pi 3**. O sistema analisa o som ambiente em tempo real e controla LEDs físicos divididos por faixas de frequência e energia musical.
+Sistema de **Show de Iluminação Rítmico Inteligente (Stage Lighting Controller)** rodando em uma **Raspberry Pi 3**. O sistema analisa o áudio ambiente em tempo real e orquestra 8 canais de atuadores físicos (Lasers, Globo RGB, Strobe e Motores de efeito).
 
 ### O Conceito do Sistema Híbrido:
-* **O Microfone é o "Reflexo"** (Sincronia em milissegundos): Captura o áudio analógico do ambiente via microfone USB, aplica Transformada Rápida de Fourier (FFT) e detecta transientes e batidas (onsets) em tempo real sem latência perceptível.
-* **A API do Spotify é o "Cérebro"** (Contexto musical): Monitora a música que o usuário está ouvindo via `spotipy`, identifica gênero, nível de energia, danceabilidade, seções e volume (loudness).
-* **Os LEDs executam a "Matriz de Decisão"**: Ajustam dinamicamente os efeitos visuais (ex: estrobo agressivo vs. fade suave) dependendo do contexto musical do Spotify e do reflexo do microfone.
+* **O Microfone é o "Reflexo"** (Sincronia em milissegundos): Captura o áudio via microfone USB, calcula FFT em Hz reais e aplica *Onset Detection* com Baseline Assimétrica para detectar batidas e pratos instantaneamente sem latência.
+* **A API do Spotify é o "Cérebro"** (Contexto musical): Monitora o player do usuário via `spotipy`, identifica gênero musical, nível de energia, danceabilidade e seções estruturais.
+* **O Orquestrador executa a "Matriz de Decisão"**: Modula o comportamento de cada laser, cor de LED e velocidade de motor de acordo com a energia musical.
 
 ---
 
-## 🖥️ 2. Hardware e Pinagem
+## 🔌 2. Hardware e Pinagem Completa (BCM da Raspberry Pi 3)
 
-* **Placa Principal:** Raspberry Pi 3 Model B (Raspbian Linux / Python 3.11).
-* **Entrada de Áudio:** Placa de Som / Microfone USB dedicado (a RPi não possui ADC analógico na porta P2/GPIO).
-* **Saídas GPIO (Numeração BCM):**
-  * **GPIO 17 (Pino Físico 11):** Luzes de **Graves / Kick / Sub-Bass**. Controlado via **PWM por hardware a 15Hz** para efeito *Strobe*.
-  * **GPIO 27 (Pino Físico 13):** Luzes de **Agudos / Pratos / Hi-Hats**. Controlado via acionamento digital rápido (*Flash*).
+| Dispositivo / Carga | Atuador Físico | Pino BCM | Pino Físico | Driver de Potência | Comportamento Musical |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **⚪ Strobe Branco** | LED 12V Branco | **GPIO 17** | Pino 11 | **ULN2003** (PWM 15Hz) | Graves / Kicks / Sub-Bass |
+| **🟢 Laser Verde** | Diodo Laser Verde | **GPIO 27** | Pino 13 | **ULN2003** (Digital) | Agudos / Pratos / Hi-Hats |
+| **🔴 Laser Vermelho** | Diodo Laser Vermelho | **GPIO 22** | Pino 15 | **ULN2003** (Digital) | Caixas / Kicks pesados / Transientes |
+| **🔴 Globo - Red (R)** | LED Vermelho do Globo | **GPIO 23** | Pino 16 | **ULN2003** (PWM) | Modulação de Médios / Atmosfera |
+| **🟢 Globo - Green (G)** | LED Verde do Globo | **GPIO 24** | Pino 18 | **ULN2003** (PWM) | Modulação de Médios / Atmosfera |
+| **🔵 Globo - Blue (B)** | LED Azul do Globo | **GPIO 25** | Pino 22 | **ULN2003** (PWM) | Modulação de Médios / Atmosfera |
+| **⚙️ Motor Filtro Laser**| Motor DC Filtro Óptico | **GPIO 18** | Pino 12 | **Ponte H** (PWM Velocidade) | Acelera nos pratos e alta energia |
+| **🌐 Motor Globo** | Motor DC Globo Giratório | **GPIO 26** | Pino 37 | **Ponte H** (PWM Velocidade) | Gira no ritmo geral da música |
+
+*Nota: Todas as configurações de pinos estão externalizadas em `config_hardware.json`.*
 
 ---
 
-## 🔑 3. Como Acessar a Raspberry Pi (Rede e Comandos)
+## 🔑 3. Acesso à Raspberry Pi (Rede e Comandos)
 
 * **Endereço IP:** `192.168.31.3`
 * **Usuário:** `gabs`
 * **Diretório do Projeto na RPi:** `/home/gabs/rasp_audio`
-* **Autenticação SSH:** Chave SSH já configurada (não pede senha ao conectar via WSL/Linux).
+* **Autenticação SSH:** Chave SSH já configurada (sem senha via WSL).
 
-### Comandos Essenciais via Terminal (WSL / Bash):
 ```bash
-# 1. Acesso SSH direto
+# Acesso SSH direto
 wsl bash -c "ssh gabs@192.168.31.3"
 
-# 2. Executar comando remoto
-wsl bash -c "ssh gabs@192.168.31.3 'cd ~/rasp_audio && ls -la'"
+# Enviar arquivos modificados (Deploy)
+wsl bash -c "scp *.py *.json gabs@192.168.31.3:~/rasp_audio/"
 
-# 3. Enviar arquivos modificados para a Raspberry Pi (Deploy)
-wsl bash -c "scp *.py gabs@192.168.31.3:~/rasp_audio/"
-
-# 4. Baixar arquivos da Raspberry Pi para o repositório local
-wsl bash -c "scp 'gabs@192.168.31.3:~/rasp_audio/*.py' ."
+# Teste de bancada dos componentes físicos
+wsl bash -c "ssh gabs@192.168.31.3 'cd ~/rasp_audio && python3 test_hardware.py'"
 ```
 
 ---
 
-## 🏗️ 4. Arquitetura de Software (Produtor/Consumidor UDP)
-
-Para evitar conflitos com o driver de áudio do Linux (ALSA), que bloqueia o microfone para uso exclusivo de um único processo, o sistema utiliza **comunicação desacoplada via UDP Broadcast na porta 5005**.
+## 🏗️ 4. Arquitetura de Software (Produtor/Consumidor UDP :5005)
 
 ```mermaid
 graph TD
-    subgraph O Reflexo
+    subgraph O Reflexo (Tempo Real)
         MIC[Microfone USB] -->|44.1kHz / 1024 chunks| S_AUD[servidor.py]
         S_AUD -->|UDP Broadcast :5005 tipo: audio| NET((Rede UDP :5005))
     end
 
-    subgraph O Cérebro
-        SP[Spotify Web API] -->|Polling 1.5s + Interpolação| S_SP[servidor_spotify.py]
+    subgraph O Cérebro (Contexto)
+        SP[Spotify Web API] -->|Polling 3.0s + Interpolação| S_SP[servidor_spotify.py]
         S_SP -->|UDP Broadcast :5005 tipo: spotify| NET
     end
 
-    subgraph Consumidores
-        NET --> C_LED[cliente_leds.py - Matriz de Decisão]
-        NET --> C_ESP[cliente_espectro.py - Visualizador ASCII]
-        C_LED -->|PWM Strobe 15Hz| GPIO17[GPIO 17 - Graves]
-        C_LED -->|Flash Digital| GPIO27[GPIO 27 - Agudos]
+    subgraph Orquestração de Efeitos
+        NET --> C_LED[cliente_leds.py - Orquestrador Multi-Canais]
+        NET --> C_ESP[cliente_espectro.py - Monitor Híbrido]
+        
+        C_LED -->|ULN2003| GPIO_ULN[Strobe BCM 17 + Lasers BCM 27/22 + Globo RGB BCM 23/24/25]
+        C_LED -->|Ponte H| GPIO_MOT[Motor Filtro BCM 18 + Motor Globo BCM 26]
     end
 ```
 
 ---
 
-## 📂 5. Descrição dos Scripts
+## 📂 5. Estrutura dos Arquivos
 
-| Arquivo | Função |
+| Arquivo | Descrição |
 | :--- | :--- |
-| `servidor.py` | **Produtor de Áudio:** Captura PyAudio, calcula FFT em Hz reais (`sub_graves`, `graves`, `medios`, `agudos`) e aplica Onset Detection com Baseline Assimétrica para detectar batidas contínuas sem sufocar sequências. Transmite `tipo: audio`. |
-| `servidor_spotify.py` | **Produtor de Contexto:** Consulta o Spotify via `spotipy`, infere o perfil musical por gênero do artista (`sp.artist`), calcula mapa de seções da música e transmite metadados `tipo: spotify` a ~10Hz com tempo interpolado. |
-| `cliente_leds.py` | **Consumidor de Hardware:** Escuta a porta UDP 5005, cruza o reflexo com o contexto do Spotify e aciona a Matriz de Decisão nos pinos GPIO 17 e 27. Possui fallback automático se o Spotify estiver desligado. |
-| `cliente_espectro.py` | **Calibrador e Monitor Visual:** Exibe no terminal as barrinhas ASCII do espectro, marcadores de batida (`💥 [PICO!]` / `⚡ [ATIVO]`) e metadados da música atual. |
-| `.env` | Armazena `SPOTIPY_CLIENT_ID`, `SPOTIPY_CLIENT_SECRET`, `SPOTIPY_REDIRECT_URI` e `PORTA_UDP`. *(Protegido no `.gitignore`)*. |
-| `.env.example` | Modelo público para criação do arquivo `.env`. |
-| `requirements.txt` | Lista de dependências Python (`spotipy`, `python-dotenv`, `numpy`, `pyaudio`). |
+| `config_hardware.json` | Mapeamento de pinos BCM, frequências PWM e parâmetros de sustentação. |
+| `drivers_hardware.py` | Classes OOP (`LuzDigital`, `LuzPWM`, `GloboRGB`, `MotorPonteH`) com temporizações não-bloqueantes. |
+| `cliente_leds.py` | Orquestrador principal dos 8 atuadores com Matriz de Decisão musical. |
+| `servidor.py` | Captura de áudio, FFT em Hz reais e detecção de picos com baseline assimétrica. |
+| `servidor_spotify.py` | Monitor de contexto Spotify com inferência de gênero e proteção anti-Rate Limit. |
+| `cliente_espectro.py` | Painel visual em ASCII com status de todos os 8 atuadores e do espectro. |
+| `test_hardware.py` | Utilitário interativo de bancada para testar cada pino/motor individualmente. |
 
 ---
 
-## 🎛️ 6. Matriz de Decisão dos Efeitos dos LEDs
+## 🎛️ 6. Coreografia dos Efeitos Musicais
 
-| Modo Spotify | Condição Musical | Comportamento Graves (GPIO 17) | Comportamento Agudos (GPIO 27) |
-| :--- | :--- | :--- | :--- |
-| **Alta Energia** | `energy >= 0.70` ou Refrão/Drop | **Strobe Máximo (PWM 15Hz @ 50%)** pulsando no ritmo exato do bumbo | **Flash Rápido e Sensível** em todo prato |
-| **Média Energia** | `0.40 <= energy < 0.70` (Versos/Pop) | **Strobe Moderado** no ritmo das batidas | Flash padrão nos pratos |
-| **Suave / Calma** | `energy < 0.40` (Lofi, Acústica, Intro) | **Sem Strobe Agressivo**; Brilho suave e pulsante proporcional | Flash atenuado (apenas pratos fortes) |
-| **Standby** | Spotify Pausado | Desligado / Repouso | Desligado / Repouso |
-| **Fallback** | Sem conexão Spotify | Resposta rítmica adaptativa por microfone | Resposta rítmica adaptativa por microfone |
-
----
-
-## 🧮 7. Regras Matemáticas e Algoritmos
-
-1. **Conversão de Hertz para Bins FFT:**
-   $$\text{bin} = \text{int}\left(\frac{\text{freq\_hz} \times \text{CHUNK}}{\text{RATE}}\right)$$
-   *(CHUNK = 1024, RATE = 44100Hz)*
-2. **Baseline Assimétrica (Anti-Sufocamento de Batidas Rápidas):**
-   - Se $\text{valor} > \text{baseline}$: $\text{baseline} = 0.008 \times \text{valor} + 0.992 \times \text{baseline}$ *(sobe muito devagar para não engolir batidas subsequentes)*.
-   - Se $\text{valor} < \text{baseline}$: $\text{baseline} = 0.08 \times \text{valor} + 0.92 \times \text{baseline}$ *(desce rápido em pausas)*.
-3. **Limiar e Envelope de Pico:**
-   $$\text{Limiar} = \text{baseline} \times \text{sensibilidade}$$
-   $$\text{Ativo} = (\text{valor} \ge \text{Limiar})$$
+| Modo Spotify / Áudio | Strobe Branco (Graves) | Lasers (Verde / Vermelho) | Globo RGB (Cores) | Motores (Ponte H) |
+| :--- | :--- | :--- | :--- | :--- |
+| **Alta Energia / Drop** | **Strobe Intenso 15Hz @ 50%** | **Flashes simultâneos** em agudos e transientes | **Cores Quentes & Rotação Eufórica** (Magenta, Vermelho, Ciano) | **Velocidade Máxima (100%)** |
+| **Média Energia / Versos** | Strobe Rítmico @ 45% | Disparos alternados nos pratos | Transição Suave (Violeta, Azul, Dourado) | Velocidade Moderada (50-60%) |
+| **Suave / Lofi / Acústica** | Brilho pulsante suave (sem estrobo) | Desligados (evita disparos falsos) | Tons Frios Relaxantes (Azul / Ciano) | Velocidade Mínima (20%) / Filtro 0% |
+| **Standby** | Apagado (ou reflexo se houver som físico) | Desligado | Desligado | Desligados (0%) |
 
 ---
 
-## 🚀 8. Como Executar na Raspberry Pi
+## 🚀 7. Como Executar na Raspberry Pi
 
-Conecte via SSH e navegue até a pasta:
 ```bash
-ssh gabs@192.168.31.3
 cd ~/rasp_audio
 
-# Terminal 1: Captura e FFT do Microfone
+# Teste de Bancada inicial (opcional):
+python3 test_hardware.py
+
+# Terminal 1: Captura de Áudio (Microfone)
 python3 servidor.py
 
-# Terminal 2: Cérebro Contextual do Spotify
+# Terminal 2: Contexto Spotify
 python3 servidor_spotify.py
 
-# Terminal 3: Controle Físico dos LEDs
+# Terminal 3: Orquestrador dos 8 Atuadores
 python3 cliente_leds.py
 
-# Terminal 4 (Opcional): Monitor Visual no Terminal
+# Terminal 4 (Opcional): Monitor Visual
 python3 cliente_espectro.py
 ```
-
----
-
-## ⚠️ 9. Dicas Importantes para Próximas IAs / Desenvolvedores
-
-1. **Sempre codifique os arquivos em UTF-8:** O Linux/Python na Raspberry Pi rejeita caracteres ISO-8859-1 sem declaração de encoding.
-2. **Sempre teste na Raspberry Pi:** Como o ambiente envolve hardware físico (GPIO e Microfone USB), execute testes remotamente via `ssh gabs@192.168.31.3 'cd ~/rasp_audio && ...'`.
-3. **Bibliotecas do Sistema:** Na Raspberry Pi com Debian Bookworm (Python 3.11), use `pip3 install <pacote> --break-system-packages` ou `sudo apt install python3-<pacote>`.
-4. **Spotify OAuth:** O arquivo de credenciais fica em `.env` e o token em `.cache_spotify`. Nunca commite esses arquivos no Git.

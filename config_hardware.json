@@ -1,0 +1,63 @@
+{
+    "pinos": {
+        "strobe_branco": {
+            "bcm": 17,
+            "tipo": "pwm",
+            "freq_pwm": 15,
+            "descricao": "LED Branco Strobe para Graves/Kicks (ULN2003)"
+        },
+        "laser_verde": {
+            "bcm": 27,
+            "tipo": "digital",
+            "descricao": "Laser Verde para Agudos/Pratos (ULN2003)"
+        },
+        "laser_vermelho": {
+            "bcm": 22,
+            "tipo": "digital",
+            "descricao": "Laser Vermelho para Caixas/Transientes (ULN2003)"
+        },
+        "globo_r": {
+            "bcm": 23,
+            "tipo": "pwm",
+            "freq_pwm": 100,
+            "descricao": "Globo LED Vermelho (ULN2003)"
+        },
+        "globo_g": {
+            "bcm": 24,
+            "tipo": "pwm",
+            "freq_pwm": 100,
+            "descricao": "Globo LED Verde (ULN2003)"
+        },
+        "globo_b": {
+            "bcm": 25,
+            "tipo": "pwm",
+            "freq_pwm": 100,
+            "descricao": "Globo LED Azul (ULN2003)"
+        },
+        "motor_laser_filtro": {
+            "bcm": 18,
+            "tipo": "pwm",
+            "freq_pwm": 1000,
+            "descricao": "Motor do Filtro do Laser (Ponte H)"
+        },
+        "motor_globo": {
+            "bcm": 26,
+            "tipo": "pwm",
+            "freq_pwm": 1000,
+            "descricao": "Motor do Globo Giratorio (Ponte H)"
+        }
+    },
+    "comportamento": {
+        "sustentacao_minima_ms": {
+            "strobe_grave": 70,
+            "laser_agudo": 50,
+            "laser_vermelho": 60
+        },
+        "velocidade_motores_pct": {
+            "suave": 20,
+            "media_energia": 55,
+            "alta_energia": 100,
+            "standby": 0
+        }
+    }
+}

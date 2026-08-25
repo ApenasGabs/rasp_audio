@@ -1,10 +1,10 @@
+# -*- coding: utf-8 -*-
 import time
 import socket
 import json
 
 PORTA_UDP = 5005
 
-# Configura o Socket UDP para ouvir
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 if hasattr(socket, "SO_REUSEPORT"):
@@ -49,61 +49,69 @@ try:
         # Verifica se o Spotify ainda está ativo
         spotify_conectado = spotify_info["ativo"] and (agora - spotify_info["ultimo_tempo"] < 4.0)
 
+        faixas = payload.get("faixas", {})
+        dados_graves = faixas.get("graves", {})
+        dados_medios = faixas.get("medios", {})
+        dados_agudos = faixas.get("agudos", {})
+        dados_super = faixas.get("super_agudos", {})
+
+        pico_grave = dados_graves.get("pico", False)
+        pico_agudo = dados_agudos.get("pico", False)
+        pico_super = dados_super.get("pico", False)
+        nivel_medios = dados_medios.get("nivel", 0.3)
+
+        # Status estimado dos atuadores
+        st_strobe = "⚡ [ON]" if (pico_grave or dados_graves.get("ativo")) else "   [OFF]"
+        st_laser_g = "🟢 [ON]" if (pico_agudo or dados_agudos.get("ativo")) else "   [OFF]"
+        st_laser_r = "🔴 [ON]" if ((pico_grave and dados_graves.get("nivel", 0) > 0.7) or pico_super) else "   [OFF]"
+
+        modo_nome = spotify_info["modo_sugerido"] if spotify_conectado else "fallback"
+        vel_mot = 100 if modo_nome == "alta_energia" else (20 if modo_nome == "suave" else 55)
+
         print("\033[H", end="")  # Volta ao topo do terminal
-        print("===================== MONITOR HÍBRIDO (SPOTIFY + ESPECTRO) =====================")
+        print("====================== SISTEMA HÍBRIDO DE ILUMINAÇÃO ======================")
 
         if spotify_conectado:
             status_spotify = "▶ TOCANDO" if spotify_info["tocando"] else "⏸ PAUSADO"
-            barra_energia = "█" * int(spotify_info["energia"] * 20)
+            barra_energia = "█" * int(spotify_info["energia"] * 18)
             print(f" Spotify: [{status_spotify}] {spotify_info['faixa']} - {spotify_info['artista']}")
             print(
-                f" Energia: [{barra_energia:<20}] ({int(spotify_info['energia'] * 100):3d}%) | "
-                f"Modo: {spotify_info['modo_sugerido'].upper():<14} | BPM: {spotify_info['tempo_bpm']:5.1f}"
+                f" Energia: [{barra_energia:<18}] ({int(spotify_info['energia'] * 100):3d}%) | "
+                f"Modo: {modo_nome.upper():<14} | BPM: {spotify_info['tempo_bpm']:5.1f}"
             )
         else:
             print(" Spotify: [OFFLINE / FALLBACK] (Operando apenas via Microfone)")
-            print(" Modo:    PADRÃO RÍTMICO")
+            print(" Modo:    PADRÃO RÍTMICO DINÂMICO")
 
-        print("--------------------------------------------------------------------------------")
+        print("----------------------------------------------------------------------------")
+        print(f" Atuadores: Strobe: {st_strobe} | Laser Vd: {st_laser_g} | Laser Vm: {st_laser_r} | Motores: {vel_mot}%")
+        print("----------------------------------------------------------------------------")
         print("Faixa            | Nível e Espectro                             | Status   | Valor / Limiar")
-        print("--------------------------------------------------------------------------------")
+        print("----------------------------------------------------------------------------")
 
-        if "faixas" in payload:
-            faixas = payload["faixas"]
-            for nome, info in faixas.items():
-                nivel = float(info.get("nivel", 0.0))
-                pico = bool(info.get("pico", False))
-                ativo = bool(info.get("ativo", False))
-                valor = int(info.get("valor", 0))
-                limiar = int(info.get("limiar", 0))
+        for nome, info in faixas.items():
+            nivel = float(info.get("nivel", 0.0))
+            pico = bool(info.get("pico", False))
+            ativo = bool(info.get("ativo", False))
+            valor = int(info.get("valor", 0))
+            limiar = int(info.get("limiar", 0))
 
-                tamanho_barra = int(nivel * 35)
-                barra = "█" * tamanho_barra
-                if pico:
-                    status = "💥 [PICO!]"
-                elif ativo:
-                    status = "⚡ [ATIVO]"
-                else:
-                    status = "   [     ]"
+            tamanho_barra = int(nivel * 30)
+            barra = "█" * tamanho_barra
+            if pico:
+                status = "💥 [PICO!]"
+            elif ativo:
+                status = "⚡ [ATIVO]"
+            else:
+                status = "   [     ]"
 
-                nome_formatado = f"{nome.replace('_', ' ').title():<16}"
-                print(
-                    f"{nome_formatado} | {barra:<35} ({int(nivel * 100):3d}%) | {status} | {valor:7d} / {limiar:7d}"
-                )
-        else:
-            # Modo legado
-            for nome, valor in payload.items():
-                if isinstance(valor, (int, float)):
-                    tamanho = min(35, int(valor / 20000))
-                    barra = "█" * tamanho
-                    nome_formatado = f"{nome.title():<16}"
-                    print(f"{nome_formatado} | {barra:<35}        | [LEGADO] | {int(valor):7d}")
+            nome_formatado = f"{nome.replace('_', ' ').title():<16}"
+            print(
+                f"{nome_formatado} | {barra:<30} ({int(nivel * 100):3d}%) | {status} | {valor:7d} / {limiar:7d}"
+            )
 
-        print("--------------------------------------------------------------------------------")
+        print("----------------------------------------------------------------------------")
         print("(Pressione Ctrl+C para sair)")
 
 except KeyboardInterrupt:
     print("\nSaindo do monitor de espectro...")
-
-
-

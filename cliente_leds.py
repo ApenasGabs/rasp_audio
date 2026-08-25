@@ -1,21 +1,47 @@
+# -*- coding: utf-8 -*-
+import os
 import time
 import socket
 import json
-import RPi.GPIO as GPIO
 
-# Configuração GPIO
-BASS_PIN = 17   # Pino 11 (Graves / Kick)
-TREBLE_PIN = 27 # Pino 13 (Agudos / Pratos)
+try:
+    import RPi.GPIO as GPIO
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setwarnings(False)
+except (ImportError, RuntimeError):
+    pass
 
-GPIO.setmode(GPIO.BCM)
-GPIO.setwarnings(False)
-GPIO.setup(BASS_PIN, GPIO.OUT)
-GPIO.setup(TREBLE_PIN, GPIO.OUT)
+from drivers_hardware import LuzDigital, LuzPWM, GloboRGB, MotorPonteH
 
-# Configuração inicial do PWM no pino do grave
-FREQ_PWM_PADRAO = 15
-strobe_grave = GPIO.PWM(BASS_PIN, FREQ_PWM_PADRAO)
-strobe_grave.start(0)  # Começa desligado (0% Duty Cycle)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_PATH = os.path.join(BASE_DIR, "config_hardware.json")
+
+# Carrega configuração de pinos
+config = {}
+if os.path.exists(CONFIG_PATH):
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            config = json.load(f)
+    except Exception as e:
+        print(f"[Aviso] Erro ao carregar config_hardware.json: {e}")
+
+pinos = config.get("pinos", {})
+p_strobe = pinos.get("strobe_branco", {}).get("bcm", 17)
+p_laser_g = pinos.get("laser_verde", {}).get("bcm", 27)
+p_laser_r = pinos.get("laser_vermelho", {}).get("bcm", 22)
+p_globo_r = pinos.get("globo_r", {}).get("bcm", 23)
+p_globo_g = pinos.get("globo_g", {}).get("bcm", 24)
+p_globo_b = pinos.get("globo_b", {}).get("bcm", 25)
+p_mot_laser = pinos.get("motor_laser_filtro", {}).get("bcm", 18)
+p_mot_globo = pinos.get("motor_globo", {}).get("bcm", 26)
+
+# Inicializa os Dispositivos de Hardware
+strobe_branco = LuzPWM(p_strobe, freq_hz=15, nome="Strobe Branco")
+laser_verde = LuzDigital(p_laser_g, nome="Laser Verde")
+laser_vermelho = LuzDigital(p_laser_r, nome="Laser Vermelho")
+globo_rgb = GloboRGB(p_globo_r, p_globo_g, p_globo_b, freq_hz=100)
+motor_laser = MotorPonteH(p_mot_laser, freq_hz=1000, nome="Motor Filtro Laser")
+motor_globo = MotorPonteH(p_mot_globo, freq_hz=1000, nome="Motor Globo")
 
 # Configuração da Rede UDP
 PORTA_UDP = 5005
@@ -26,57 +52,50 @@ if hasattr(socket, "SO_REUSEPORT"):
 sock.bind(("", PORTA_UDP))
 
 print("==========================================================")
-print(" Cliente LED Híbrido Iniciado (Microfone + Spotify)")
-print(" - Graves (GPIO 17): PWM Strobe/Fade Dinâmico")
-print(" - Agudos (GPIO 27): Flash On/Off Contextual")
-print(" Aguardando pacotes de áudio e contexto musical...")
+print(" Orquestrador de Iluminação Multi-Canais Iniciado")
+print(f" - Strobe Branco: GPIO {p_strobe} (PWM 15Hz)")
+print(f" - Lasers Verde / Vermelho: GPIO {p_laser_g} / GPIO {p_laser_r}")
+print(f" - Globo RGB: GPIO R:{p_globo_r} G:{p_globo_g} B:{p_globo_b}")
+print(f" - Motores (Ponte H): Filtro Laser:{p_mot_laser} | Globo:{p_mot_globo}")
+print(" Aguardando pacotes UDP de Áudio e Spotify...")
 print("==========================================================")
 
-# Estado Contextual do Spotify
 contexto_spotify = {
     "ativo": False,
     "tocando": False,
     "faixa": "",
     "artista": "",
-    "energia": 0.5,
-    "danceabilidade": 0.5,
+    "energia": 0.6,
+    "danceabilidade": 0.6,
     "modo_sugerido": "fallback",
     "ultimo_timestamp": 0.0
 }
 
-# Controle de sustentação temporal dos efeitos
-SUSTENTACAO_GRAVE = 0.06  # 60ms
-SUSTENTACAO_AGUDO = 0.05  # 50ms
-
-fim_efeito_grave = 0.0
-fim_flash_agudo = 0.0
+ultimo_ciclo = time.time()
 
 try:
     while True:
         data, addr = sock.recvfrom(2048)
         payload = json.loads(data.decode("utf-8"))
         agora = time.time()
+        delta_tempo = max(0.001, agora - ultimo_ciclo)
+        ultimo_ciclo = agora
 
         tipo_pacote = payload.get("tipo", "audio")
 
-        # ---------------------------------------------------------
-        # 1. PACOTE SPOTIFY (O CÉREBRO: Metadados e Contexto)
-        # ---------------------------------------------------------
+        # 1. PROCESSAMENTO DE METADADOS DO SPOTIFY
         if tipo_pacote == "spotify":
             contexto_spotify["ativo"] = True
             contexto_spotify["tocando"] = payload.get("tocando", False)
             contexto_spotify["faixa"] = payload.get("faixa", "")
             contexto_spotify["artista"] = payload.get("artista", "")
-            contexto_spotify["energia"] = payload.get("energia", 0.5)
-            contexto_spotify["danceabilidade"] = payload.get("danceabilidade", 0.5)
+            contexto_spotify["energia"] = payload.get("energia", 0.6)
+            contexto_spotify["danceabilidade"] = payload.get("danceabilidade", 0.6)
             contexto_spotify["modo_sugerido"] = payload.get("modo_sugerido", "media_energia")
             contexto_spotify["ultimo_timestamp"] = agora
             continue
 
-        # ---------------------------------------------------------
-        # 2. PACOTE DE ÁUDIO (O REFLEXO: Detecção Rápida em ms)
-        # ---------------------------------------------------------
-        # Verifica se o Spotify está ativo (timeout de 4.0 segundos para fallback automático)
+        # 2. DETERMINAÇÃO DO MODO ATUAL
         spotify_online = contexto_spotify["ativo"] and (agora - contexto_spotify["ultimo_timestamp"] < 4.0)
 
         if spotify_online:
@@ -87,102 +106,93 @@ try:
         else:
             modo_atual = "fallback"
 
-        # Extrai os dados do microfone/FFT
-        if "faixas" in payload:
-            dados_graves = payload["faixas"].get("graves", {})
-            dados_agudos = payload["faixas"].get("agudos", {})
+        # 3. EXTRAÇÃO DAS FAIXAS DE ÁUDIO DO MICROFONE
+        faixas = payload.get("faixas", {})
+        dados_graves = faixas.get("graves", {})
+        dados_medios = faixas.get("medios", {})
+        dados_agudos = faixas.get("agudos", {})
+        dados_super_agudos = faixas.get("super_agudos", {})
 
-            ativo_grave = dados_graves.get("ativo", False)
-            pico_grave = dados_graves.get("pico", False)
-            nivel_grave = dados_graves.get("nivel", 0.0)
+        ativo_grave = dados_graves.get("ativo", False)
+        pico_grave = dados_graves.get("pico", False)
+        nivel_grave = dados_graves.get("nivel", 0.0)
 
-            ativo_agudo = dados_agudos.get("ativo", False)
-            pico_agudo = dados_agudos.get("pico", False)
-            nivel_agudo = dados_agudos.get("nivel", 0.0)
-        else:
-            pico_grave = payload.get("graves", 0) > 2500000
-            ativo_grave = pico_grave
-            nivel_grave = 1.0 if pico_grave else 0.0
+        nivel_medios = dados_medios.get("nivel", 0.3)
+        ativo_medios = dados_medios.get("ativo", False)
 
-            pico_agudo = payload.get("agudos", 0) > 10000
-            ativo_agudo = pico_agudo
-            nivel_agudo = 1.0 if pico_agudo else 0.0
+        ativo_agudo = dados_agudos.get("ativo", False)
+        pico_agudo = dados_agudos.get("pico", False)
+        nivel_agudo = dados_agudos.get("nivel", 0.0)
 
-        # ---------------------------------------------------------
-        # 3. MATRIZ DE DECISÃO (AÇÃO NO HARDWARE)
-        # ---------------------------------------------------------
+        pico_super = dados_super_agudos.get("pico", False)
 
-        # MODO STANDBY: Spotify pausado ou sem música
-        if modo_atual == "standby":
-            # Se mesmo em standby o microfone captar batidas fortes no ambiente, responde pelo reflexo
-            if ativo_grave or pico_grave or nivel_grave >= 0.45:
-                fim_efeito_grave = max(fim_efeito_grave, agora + SUSTENTACAO_GRAVE)
-                strobe_grave.ChangeDutyCycle(45)
-            elif agora >= fim_efeito_grave:
-                strobe_grave.ChangeDutyCycle(0)
+        # 4. COREOGRAFIA DOS ATUADORES (A MATRIZ DE DECISÃO)
 
-            if pico_agudo or (ativo_agudo and nivel_agudo >= 0.50):
-                fim_flash_agudo = max(fim_flash_agudo, agora + SUSTENTACAO_AGUDO)
-                GPIO.output(TREBLE_PIN, GPIO.HIGH)
-            elif agora >= fim_flash_agudo:
-                GPIO.output(TREBLE_PIN, GPIO.LOW)
-            continue
+        # --- A. CONTROLE DO GLOBO RGB ---
+        globo_rgb.definir_paleta_contextual(modo_atual, nivel_medios, agora)
 
-        # MODO SUAVE: Música acústica, lofi, calma (energia < 0.40)
+        # --- B. CONTROLE DOS MOTORES (PONTE H) ---
+        if modo_atual == "alta_energia":
+            motor_globo.definir_velocidade(100.0)
+            # Acelera o filtro óptico do laser nos ataques de agudo
+            vel_laser = 100.0 if (ativo_agudo or pico_agudo) else 70.0
+            motor_laser.definir_velocidade(vel_laser)
+
         elif modo_atual == "suave":
-            # Grave: Sem estrobo agressivo; brilho pulsante suave proporcional ao nível
+            motor_globo.definir_velocidade(20.0)
+            motor_laser.definir_velocidade(0.0)
+
+        elif modo_atual == "standby":
+            if ativo_grave or pico_grave or ativo_agudo:
+                # Se houver som no ambiente mesmo em standby, aciona motor em velocidade moderada
+                motor_globo.definir_velocidade(45.0)
+                motor_laser.definir_velocidade(35.0)
+            else:
+                motor_globo.definir_velocidade(0.0)
+                motor_laser.definir_velocidade(0.0)
+
+        else:  # media_energia / fallback
+            motor_globo.definir_velocidade(55.0)
+            motor_laser.definir_velocidade(45.0 if ativo_agudo else 30.0)
+
+        # --- C. CONTROLE DO STROBE BRANCO (GRAVES / KICK) ---
+        if modo_atual == "suave":
+            # Sem estrobo agressivo em músicas calmas; brilho pulsante suave
             if ativo_grave or nivel_grave > 0.3:
-                duty_suave = min(35, int(nivel_grave * 35))
-                strobe_grave.ChangeDutyCycle(duty_suave)
-                fim_efeito_grave = agora + SUSTENTACAO_GRAVE
-            elif agora >= fim_efeito_grave:
-                strobe_grave.ChangeDutyCycle(0)
-
-
-            # Agudo: Ativa apenas em pratos muito nítidos e suaves
-            if pico_agudo and nivel_agudo >= 0.70:
-                fim_flash_agudo = agora + SUSTENTACAO_AGUDO
-                GPIO.output(TREBLE_PIN, GPIO.HIGH)
-            elif agora >= fim_flash_agudo:
-                GPIO.output(TREBLE_PIN, GPIO.LOW)
-
-        # MODO ALTA ENERGIA: Refrão, Drop, Rock/Eletrônica/Funk (energia >= 0.70)
-        elif modo_atual == "alta_energia":
-            # Grave: Strobe máximo a 15Hz (50% DutyCycle)
-            if ativo_grave or pico_grave or nivel_grave >= 0.40:
-                fim_efeito_grave = max(fim_efeito_grave, agora + SUSTENTACAO_GRAVE)
-                strobe_grave.ChangeDutyCycle(50)
-            elif agora >= fim_efeito_grave:
-                strobe_grave.ChangeDutyCycle(0)
-
-            # Agudo: Flash ágil e sensível nos pratos
-            if pico_agudo or (ativo_agudo and nivel_agudo >= 0.40):
-                fim_flash_agudo = max(fim_flash_agudo, agora + SUSTENTACAO_AGUDO)
-                GPIO.output(TREBLE_PIN, GPIO.HIGH)
-            elif agora >= fim_flash_agudo:
-                GPIO.output(TREBLE_PIN, GPIO.LOW)
-
-        # MODO MÉDIA ENERGIA / FALLBACK: Resposta rítmica equilibrada
+                strobe_branco.pulsar(min(35.0, nivel_grave * 35.0), duracao_s=0.07)
         else:
-            # Grave: Strobe rítmico padrão
-            if ativo_grave or pico_grave or nivel_grave >= 0.45:
-                fim_efeito_grave = max(fim_efeito_grave, agora + SUSTENTACAO_GRAVE)
-                strobe_grave.ChangeDutyCycle(45)
-            elif agora >= fim_efeito_grave:
-                strobe_grave.ChangeDutyCycle(0)
+            # Strobe rítmico a 15Hz nas batidas de grave
+            if ativo_grave or pico_grave or nivel_grave >= 0.40:
+                duty_strobe = 50.0 if modo_atual == "alta_energia" else 45.0
+                strobe_branco.pulsar(duty_strobe, duracao_s=0.07)
 
-            # Agudo: Flash nos pratos
-            if pico_agudo or (ativo_agudo and nivel_agudo >= 0.50):
-                fim_flash_agudo = max(fim_flash_agudo, agora + SUSTENTACAO_AGUDO)
-                GPIO.output(TREBLE_PIN, GPIO.HIGH)
-            elif agora >= fim_flash_agudo:
-                GPIO.output(TREBLE_PIN, GPIO.LOW)
+        # --- D. CONTROLE DOS LASERS VERDE E VERMELHO (AGUDOS E ATAQUES) ---
+        if modo_atual != "suave":
+            # Laser Verde: dispara nos pratos de agudo (Hi-Hats / Címbalos)
+            if pico_agudo or (ativo_agudo and nivel_agudo >= 0.40):
+                laser_verde.pulsar(duracao_s=0.05)
+
+            # Laser Vermelho: dispara em kicks pesados, super agudos ou caixas
+            if (pico_grave and nivel_grave >= 0.70) or pico_super:
+                laser_vermelho.pulsar(duracao_s=0.06)
+
+        # 5. ATUALIZAÇÃO TEMPORAL DE TODOS OS DISPOSITIVOS
+        strobe_branco.atualizar(agora)
+        laser_verde.atualizar(agora)
+        laser_vermelho.atualizar(agora)
+        motor_globo.atualizar(delta_tempo)
+        motor_laser.atualizar(delta_tempo)
 
 except KeyboardInterrupt:
-    print("\nParando LEDs...")
+    print("\nParando todos os dispositivos...")
 finally:
-    strobe_grave.stop()
-    GPIO.cleanup()
-
-
-
+    strobe_branco.parar()
+    laser_verde.desligar()
+    laser_vermelho.desligar()
+    globo_rgb.parar()
+    motor_globo.parar()
+    motor_laser.parar()
+    try:
+        GPIO.cleanup()
+    except Exception:
+        pass

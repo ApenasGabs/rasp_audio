@@ -6,16 +6,6 @@
             "freq_pwm": 15,
             "descricao": "LED Branco Strobe para Graves/Kicks (ULN2003)"
         },
-        "laser_verde": {
-            "bcm": 27,
-            "tipo": "digital",
-            "descricao": "Laser Verde para Agudos/Pratos (ULN2003)"
-        },
-        "laser_vermelho": {
-            "bcm": 22,
-            "tipo": "digital",
-            "descricao": "Laser Vermelho para Caixas/Transientes (ULN2003)"
-        },
         "globo_r": {
             "bcm": 23,
             "tipo": "pwm",
@@ -34,31 +24,23 @@
             "freq_pwm": 100,
             "descricao": "Globo LED Azul (ULN2003)"
         },
-        "motor_laser_filtro": {
-            "bcm_in1": 18,
-            "bcm_in2": 13,
-            "tipo": "ponte_h_bidirecional",
-            "freq_pwm": 1000,
-            "descricao": "Motor do Filtro do Laser Bidirecional (Ponte H IN1/IN2)"
-        },
-        "motor_globo": {
-            "bcm_in1": 26,
-            "bcm_in2": 19,
-            "tipo": "ponte_h_bidirecional",
-            "freq_pwm": 1000,
-            "descricao": "Motor do Globo Giratorio Bidirecional (Ponte H IN1/IN2)"
+        "servo_globo": {
+            "bcm": 18,
+            "tipo": "servo_pwm_50hz",
+            "angulo_min": 15,
+            "angulo_max": 165,
+            "angulo_centro": 90,
+            "descricao": "Servo Motor SG90 do Globo Giratorio"
         }
     },
     "comportamento": {
-        "modos_movimento": {
-            "globo_tempo_inversao_s": 6.0,
-            "filtro_laser_oscilacao_hz": 2.5
+        "sustentacao_minima_ms": {
+            "strobe_grave": 70
         },
-        "velocidade_motores_pct": {
-            "suave": 25,
-            "media_energia": 60,
-            "alta_energia": 100,
-            "standby": 0
+        "servo_velocidade_graus_s": {
+            "suave": 45.0,
+            "media_energia": 110.0,
+            "alta_energia": 250.0
         }
     }
 }

@@ -10,40 +10,6 @@ except (ImportError, RuntimeError):
     print("[Aviso] RPi.GPIO não disponível neste ambiente. Operando em modo Mock/Simulação.")
 
 
-class LuzDigital:
-    """Controla diodos laser ou LEDs digitais via ULN2003 (Liga/Desliga com sustentação)."""
-
-    def __init__(self, pino_bcm, nome="LuzDigital"):
-        self.pino = pino_bcm
-        self.nome = nome
-        self.estado = False
-        self.fim_pulso = 0.0
-
-        if GPIO_DISPONIVEL:
-            GPIO.setup(self.pino, GPIO.OUT)
-            GPIO.output(self.pino, GPIO.LOW)
-
-    def ligar(self):
-        self.estado = True
-        if GPIO_DISPONIVEL:
-            GPIO.output(self.pino, GPIO.HIGH)
-
-    def desligar(self):
-        self.estado = False
-        if GPIO_DISPONIVEL:
-            GPIO.output(self.pino, GPIO.LOW)
-
-    def pulsar(self, duracao_s=0.06):
-        """Liga e agenda o desligamento automático após duracao_s."""
-        self.fim_pulso = max(self.fim_pulso, time.time() + duracao_s)
-        self.ligar()
-
-    def atualizar(self, agora):
-        """Desliga se o tempo de sustentação expirou."""
-        if self.estado and agora >= self.fim_pulso:
-            self.desligar()
-
-
 class LuzPWM:
     """Controla LEDs com PWM por hardware (Strobe de Graves ou Brilho Variável)."""
 
@@ -139,79 +105,69 @@ class GloboRGB:
         self.luz_b.parar()
 
 
-class MotorBidirecional:
-    """Controla motor DC bidirecional na Ponte H (Avanço, Recuo, Rampa de Aceleração e Inversão)."""
+class ServoSG90:
+    """Controla o Servo Motor SG90 com sinal PWM a 50Hz (Ângulos de 0° a 180°)."""
 
-    def __init__(self, pino_in1, pino_in2, freq_hz=1000, nome="MotorBidirecional"):
-        self.pino_in1 = pino_in1
-        self.pino_in2 = pino_in2
+    def __init__(self, pino_bcm, angulo_min=15, angulo_max=165, freq_hz=50, nome="ServoSG90"):
+        self.pino = pino_bcm
+        self.angulo_min = angulo_min
+        self.angulo_max = angulo_max
         self.freq_hz = freq_hz
         self.nome = nome
 
-        self.direcao_atual = 0    # 1 (frente), -1 (trás), 0 (parado)
-        self.direcao_alvo = 1
-        self.velocidade_atual = 0.0
-        self.velocidade_alvo = 0.0
-
-        self.pwm_in1 = None
-        self.pwm_in2 = None
+        self.angulo_atual = 90.0
+        self.angulo_alvo = 90.0
+        self.velocidade_graus_s = 120.0
+        self.pwm = None
 
         if GPIO_DISPONIVEL:
-            GPIO.setup(self.pino_in1, GPIO.OUT)
-            GPIO.setup(self.pino_in2, GPIO.OUT)
-            self.pwm_in1 = GPIO.PWM(self.pino_in1, self.freq_hz)
-            self.pwm_in2 = GPIO.PWM(self.pino_in2, self.freq_hz)
-            self.pwm_in1.start(0)
-            self.pwm_in2.start(0)
+            GPIO.setup(self.pino, GPIO.OUT)
+            self.pwm = GPIO.PWM(self.pino, self.freq_hz)
+            self.pwm.start(self._graus_para_duty(90.0))
 
-    def definir_movimento(self, velocidade_pct, direcao=1):
-        """Define a velocidade desejada (0-100%) e direção (1=frente, -1=trás)."""
-        self.velocidade_alvo = max(0.0, min(100.0, float(velocidade_pct)))
-        if direcao in [1, -1]:
-            self.direcao_alvo = direcao
+    def _graus_para_duty(self, graus):
+        """Converte ângulo de 0° a 180° para Duty Cycle percentual (2.5% a 12.5%)."""
+        graus_clamp = max(0.0, min(180.0, float(graus)))
+        return 2.5 + (graus_clamp / 180.0) * 10.0
 
-    def inverter_direcao(self):
-        """Inverte o sentido de rotação atual (efeito vai e volta / rebate na batida)."""
-        self.direcao_alvo = -1 if self.direcao_alvo == 1 else 1
+    def definir_angulo(self, graus):
+        """Move diretamente para o ângulo especificado."""
+        self.angulo_alvo = max(self.angulo_min, min(self.angulo_max, float(graus)))
+        self.angulo_atual = self.angulo_alvo
+        if GPIO_DISPONIVEL and self.pwm:
+            duty = self._graus_para_duty(self.angulo_atual)
+            self.pwm.ChangeDutyCycle(duty)
 
-    def oscilar_senoidal(self, freq_hz, velocidade_max_pct, tempo_atual):
-        """Cria movimento contínuo e suave de vai-e-vem (sweep / oscilação rítmica)."""
-        seno = math.sin(2.0 * math.pi * freq_hz * tempo_atual)
-        direcao = 1 if seno >= 0 else -1
-        velocidade = abs(seno) * velocidade_max_pct
-        self.definir_movimento(velocidade, direcao)
+    def definir_alvo_suave(self, graus, velocidade_graus_s=120.0):
+        """Define o ângulo de destino com velocidade controlada."""
+        self.angulo_alvo = max(self.angulo_min, min(self.angulo_max, float(graus)))
+        self.velocidade_graus_s = max(10.0, float(velocidade_graus_s))
+
+    def varrer_senoidal(self, freq_hz, angulo_min, angulo_max, tempo_atual):
+        """Cria movimento pendular / de varredura contínuo suave."""
+        seno = (math.sin(2.0 * math.pi * freq_hz * tempo_atual) + 1.0) / 2.0
+        angulo = angulo_min + (seno * (angulo_max - angulo_min))
+        self.definir_angulo(angulo)
 
     def atualizar(self, delta_tempo=0.025):
-        """Aplica rampa suave de aceleração e proteção ao inverter o sentido da Ponte H."""
-        # Se precisa mudar de direção, primeiro desacelera até 0 antes de inverter
-        mudando_direcao = (self.direcao_atual != self.direcao_alvo and self.velocidade_atual > 5.0)
-
-        taxa_rampa = 120.0 * delta_tempo  # 120% por segundo
-
-        if mudando_direcao:
-            self.velocidade_atual = max(0.0, self.velocidade_atual - (taxa_rampa * 1.5))
-        else:
-            self.direcao_atual = self.direcao_alvo
-            if self.velocidade_atual < self.velocidade_alvo:
-                self.velocidade_atual = min(self.velocidade_alvo, self.velocidade_atual + taxa_rampa)
-            elif self.velocidade_atual > self.velocidade_alvo:
-                self.velocidade_atual = max(self.velocidade_alvo, self.velocidade_atual - taxa_rampa)
-
-        # Envia os sinais PWM para a Ponte H
-        if GPIO_DISPONIVEL and self.pwm_in1 and self.pwm_in2:
-            if self.direcao_atual == 1:
-                self.pwm_in2.ChangeDutyCycle(0)
-                self.pwm_in1.ChangeDutyCycle(self.velocidade_atual)
-            elif self.direcao_atual == -1:
-                self.pwm_in1.ChangeDutyCycle(0)
-                self.pwm_in2.ChangeDutyCycle(self.velocidade_atual)
+        """Interpolação suave não-bloqueante entre o ângulo atual e o alvo."""
+        if abs(self.angulo_atual - self.angulo_alvo) > 0.5:
+            passo = self.velocidade_graus_s * delta_tempo
+            if self.angulo_atual < self.angulo_alvo:
+                self.angulo_atual = min(self.angulo_alvo, self.angulo_atual + passo)
             else:
-                self.pwm_in1.ChangeDutyCycle(0)
-                self.pwm_in2.ChangeDutyCycle(0)
+                self.angulo_atual = max(self.angulo_alvo, self.angulo_atual - passo)
+
+            if GPIO_DISPONIVEL and self.pwm:
+                duty = self._graus_para_duty(self.angulo_atual)
+                self.pwm.ChangeDutyCycle(duty)
+
+    def desativar_sinal(self):
+        """Zera o duty cycle para que o servo pare de vibrar / emitir zumbido em repouso."""
+        if GPIO_DISPONIVEL and self.pwm:
+            self.pwm.ChangeDutyCycle(0)
 
     def parar(self):
-        if GPIO_DISPONIVEL and self.pwm_in1 and self.pwm_in2:
-            self.pwm_in1.ChangeDutyCycle(0)
-            self.pwm_in2.ChangeDutyCycle(0)
-            self.pwm_in1.stop()
-            self.pwm_in2.stop()
+        if GPIO_DISPONIVEL and self.pwm:
+            self.pwm.ChangeDutyCycle(0)
+            self.pwm.stop()

@@ -11,7 +11,7 @@ try:
 except (ImportError, RuntimeError):
     pass
 
-from drivers_hardware import LuzDigital, LuzPWM, GloboRGB, MotorBidirecional
+from drivers_hardware import LuzPWM, GloboRGB, ServoSG90
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config_hardware.json")
@@ -26,27 +26,15 @@ if os.path.exists(CONFIG_PATH):
 
 pinos = config.get("pinos", {})
 p_strobe = pinos.get("strobe_branco", {}).get("bcm", 17)
-p_laser_g = pinos.get("laser_verde", {}).get("bcm", 27)
-p_laser_r = pinos.get("laser_vermelho", {}).get("bcm", 22)
 p_globo_r = pinos.get("globo_r", {}).get("bcm", 23)
 p_globo_g = pinos.get("globo_g", {}).get("bcm", 24)
 p_globo_b = pinos.get("globo_b", {}).get("bcm", 25)
-
-# Pinos Bidirecionais da Ponte H (IN1 / IN2)
-p_mot_laser_in1 = pinos.get("motor_laser_filtro", {}).get("bcm_in1", 18)
-p_mot_laser_in2 = pinos.get("motor_laser_filtro", {}).get("bcm_in2", 13)
-
-p_mot_globo_in1 = pinos.get("motor_globo", {}).get("bcm_in1", 26)
-p_mot_globo_in2 = pinos.get("motor_globo", {}).get("bcm_in2", 19)
+p_servo = pinos.get("servo_globo", {}).get("bcm", 18)
 
 # Inicializa os Dispositivos de Hardware
 strobe_branco = LuzPWM(p_strobe, freq_hz=15, nome="Strobe Branco")
-laser_verde = LuzDigital(p_laser_g, nome="Laser Verde")
-laser_vermelho = LuzDigital(p_laser_r, nome="Laser Vermelho")
 globo_rgb = GloboRGB(p_globo_r, p_globo_g, p_globo_b, freq_hz=100)
-
-motor_laser = MotorBidirecional(p_mot_laser_in1, p_mot_laser_in2, freq_hz=1000, nome="Filtro Laser (Ponte H)")
-motor_globo = MotorBidirecional(p_mot_globo_in1, p_mot_globo_in2, freq_hz=1000, nome="Globo Giratorio (Ponte H)")
+servo_globo = ServoSG90(p_servo, angulo_min=15, angulo_max=165, freq_hz=50, nome="Servo Globo")
 
 # Configuração da Rede UDP
 PORTA_UDP = 5005
@@ -57,12 +45,10 @@ if hasattr(socket, "SO_REUSEPORT"):
 sock.bind(("", PORTA_UDP))
 
 print("==========================================================")
-print(" Orquestrador de Iluminação Multi-Canais & Bidirecional")
-print(f" - Strobe Branco: GPIO {p_strobe} (PWM 15Hz)")
-print(f" - Lasers Verde / Vermelho: GPIO {p_laser_g} / GPIO {p_laser_r}")
+print(" Orquestrador de Iluminação com Servo Motor SG90")
+print(f" - Strobe Branco (Graves): GPIO {p_strobe} (PWM 15Hz)")
 print(f" - Globo RGB: GPIO R:{p_globo_r} G:{p_globo_g} B:{p_globo_b}")
-print(f" - Motor Filtro Laser: IN1:{p_mot_laser_in1} / IN2:{p_mot_laser_in2} (Bidirecional)")
-print(f" - Motor Globo Giratório: IN1:{p_mot_globo_in1} / IN2:{p_mot_globo_in2} (Bidirecional)")
+print(f" - Servo SG90 (Globo): GPIO {p_servo} (Sinal PWM 50Hz)")
 print(" Aguardando pacotes UDP de Áudio e Spotify...")
 print("==========================================================")
 
@@ -78,9 +64,7 @@ contexto_spotify = {
 }
 
 ultimo_ciclo = time.time()
-ultimo_inversao_globo = time.time()
-direcao_globo = 1
-contador_kicks = 0
+lado_salto_servo = 30.0
 
 try:
     while True:
@@ -120,68 +104,41 @@ try:
         dados_graves = faixas.get("graves", {})
         dados_medios = faixas.get("medios", {})
         dados_agudos = faixas.get("agudos", {})
-        dados_super_agudos = faixas.get("super_agudos", {})
 
         ativo_grave = dados_graves.get("ativo", False)
         pico_grave = dados_graves.get("pico", False)
         nivel_grave = dados_graves.get("nivel", 0.0)
-
         nivel_medios = dados_medios.get("nivel", 0.3)
-        ativo_medios = dados_medios.get("ativo", False)
-
         ativo_agudo = dados_agudos.get("ativo", False)
-        pico_agudo = dados_agudos.get("pico", False)
-        nivel_agudo = dados_agudos.get("nivel", 0.0)
-
-        pico_super = dados_super_agudos.get("pico", False)
 
         # 4. COREOGRAFIA DOS ATUADORES
 
         # --- A. CONTROLE DO GLOBO RGB ---
         globo_rgb.definir_paleta_contextual(modo_atual, nivel_medios, agora)
 
-        # --- B. CONTROLE BIDIRECIONAL DOS MOTORES (PONTE H) ---
-        
-        # Gerenciamento de inversão do Globo (Sweep / Vai e Volta periódico ou por batida)
-        tempo_varredura = 4.0 if modo_atual == "alta_energia" else 6.5
-        if agora - ultimo_inversao_globo >= tempo_varredura:
-            direcao_globo = -1 if direcao_globo == 1 else 1
-            ultimo_inversao_globo = agora
-
-        # Inversão de impacto no Drop / Kicks pesados
-        if pico_grave and nivel_grave >= 0.85:
-            contador_kicks += 1
-            if contador_kicks >= 4:  # A cada 4 batidas fortes inverte sentido
-                direcao_globo = -1 if direcao_globo == 1 else 1
-                contador_kicks = 0
-                ultimo_inversao_globo = agora
-
+        # --- B. CONTROLE DO SERVO MOTOR SG90 ---
         if modo_atual == "alta_energia":
-            # Globo: velocidade total alternando direção
-            motor_globo.definir_movimento(100.0, direcao_globo)
-            # Filtro do Laser: oscilação rápida rítmica (vai e volta a 2.5Hz)
-            motor_laser.oscilar_senoidal(freq_hz=2.5, velocidade_max_pct=100.0, tempo_atual=agora)
+            # Nos kicks fortes de grave dá um salto brusco para um dos lados
+            if pico_grave and nivel_grave >= 0.70:
+                lado_salto_servo = 150.0 if lado_salto_servo <= 90.0 else 30.0
+                servo_globo.definir_angulo(lado_salto_servo)
+            else:
+                # Varredura rítmica rápida a 1.0Hz
+                servo_globo.varrer_senoidal(freq_hz=1.0, angulo_min=20.0, angulo_max=160.0, tempo_atual=agora)
 
         elif modo_atual == "suave":
-            # Movimento calmo e suave (vai e volta lento)
-            motor_globo.definir_movimento(25.0, direcao_globo)
-            motor_laser.definir_movimento(0.0, 0)
+            # Movimento pendular calmo e relaxante a 0.2Hz (5s por ciclo)
+            servo_globo.varrer_senoidal(freq_hz=0.2, angulo_min=50.0, angulo_max=130.0, tempo_atual=agora)
 
         elif modo_atual == "standby":
             if ativo_grave or pico_grave or ativo_agudo:
-                motor_globo.definir_movimento(45.0, direcao_globo)
-                motor_laser.definir_movimento(30.0, 1)
+                servo_globo.varrer_senoidal(freq_hz=0.4, angulo_min=45.0, angulo_max=135.0, tempo_atual=agora)
             else:
-                motor_globo.definir_movimento(0.0, 0)
-                motor_laser.definir_movimento(0.0, 0)
+                servo_globo.definir_angulo(90.0)
 
         else:  # media_energia / fallback
-            motor_globo.definir_movimento(60.0, direcao_globo)
-            # Filtro do laser acompanha pratos ou oscila suavemente a 1.2Hz
-            if ativo_agudo or pico_agudo:
-                motor_laser.oscilar_senoidal(freq_hz=1.8, velocidade_max_pct=75.0, tempo_atual=agora)
-            else:
-                motor_laser.definir_movimento(35.0, 1)
+            # Varredura rítmica constante a 0.5Hz (2s por ciclo)
+            servo_globo.varrer_senoidal(freq_hz=0.5, angulo_min=30.0, angulo_max=150.0, tempo_atual=agora)
 
         # --- C. CONTROLE DO STROBE BRANCO (GRAVES / KICK) ---
         if modo_atual == "suave":
@@ -192,30 +149,17 @@ try:
                 duty_strobe = 50.0 if modo_atual == "alta_energia" else 45.0
                 strobe_branco.pulsar(duty_strobe, duracao_s=0.07)
 
-        # --- D. CONTROLE DOS LASERS (AGUDOS E ATAQUES) ---
-        if modo_atual != "suave":
-            if pico_agudo or (ativo_agudo and nivel_agudo >= 0.40):
-                laser_verde.pulsar(duracao_s=0.05)
-
-            if (pico_grave and nivel_grave >= 0.70) or pico_super:
-                laser_vermelho.pulsar(duracao_s=0.06)
-
         # 5. ATUALIZAÇÃO TEMPORAL DOS ATUADORES
         strobe_branco.atualizar(agora)
-        laser_verde.atualizar(agora)
-        laser_vermelho.atualizar(agora)
-        motor_globo.atualizar(delta_tempo)
-        motor_laser.atualizar(delta_tempo)
+        servo_globo.atualizar(delta_tempo)
 
 except KeyboardInterrupt:
     print("\nParando todos os dispositivos...")
 finally:
     strobe_branco.parar()
-    laser_verde.desligar()
-    laser_vermelho.desligar()
     globo_rgb.parar()
-    motor_globo.parar()
-    motor_laser.parar()
+    servo_globo.desativar_sinal()
+    servo_globo.parar()
     try:
         GPIO.cleanup()
     except Exception:

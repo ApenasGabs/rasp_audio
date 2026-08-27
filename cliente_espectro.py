@@ -11,7 +11,7 @@ if hasattr(socket, "SO_REUSEPORT"):
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
 sock.bind(("", PORTA_UDP))
 
-print("\033[2J\033[H", end="")  # Limpa a tela
+print("\033[2J\033[H", end="")
 print("Aguardando pacotes UDP de Áudio e Spotify...")
 
 spotify_info = {
@@ -21,7 +21,6 @@ spotify_info = {
     "artista": "-",
     "energia": 0.0,
     "modo_sugerido": "fallback",
-    "secao_loudness": -8.0,
     "tempo_bpm": 120.0,
     "ultimo_tempo": 0.0
 }
@@ -41,34 +40,23 @@ try:
             spotify_info["artista"] = payload.get("artista", "-")
             spotify_info["energia"] = payload.get("energia", 0.0)
             spotify_info["modo_sugerido"] = payload.get("modo_sugerido", "fallback")
-            spotify_info["secao_loudness"] = payload.get("secao_loudness", -8.0)
             spotify_info["tempo_bpm"] = payload.get("tempo_bpm", 120.0)
             spotify_info["ultimo_tempo"] = agora
             continue
 
-        # Verifica se o Spotify ainda está ativo
         spotify_conectado = spotify_info["ativo"] and (agora - spotify_info["ultimo_tempo"] < 4.0)
 
         faixas = payload.get("faixas", {})
         dados_graves = faixas.get("graves", {})
         dados_medios = faixas.get("medios", {})
         dados_agudos = faixas.get("agudos", {})
-        dados_super = faixas.get("super_agudos", {})
 
         pico_grave = dados_graves.get("pico", False)
-        pico_agudo = dados_agudos.get("pico", False)
-        pico_super = dados_super.get("pico", False)
-        nivel_medios = dados_medios.get("nivel", 0.3)
-
-        # Status estimado dos atuadores
         st_strobe = "⚡ [ON]" if (pico_grave or dados_graves.get("ativo")) else "   [OFF]"
-        st_laser_g = "🟢 [ON]" if (pico_agudo or dados_agudos.get("ativo")) else "   [OFF]"
-        st_laser_r = "🔴 [ON]" if ((pico_grave and dados_graves.get("nivel", 0) > 0.7) or pico_super) else "   [OFF]"
 
         modo_nome = spotify_info["modo_sugerido"] if spotify_conectado else "fallback"
-        vel_mot = 100 if modo_nome == "alta_energia" else (20 if modo_nome == "suave" else 55)
 
-        print("\033[H", end="")  # Volta ao topo do terminal
+        print("\033[H", end="")
         print("====================== SISTEMA HÍBRIDO DE ILUMINAÇÃO ======================")
 
         if spotify_conectado:
@@ -84,7 +72,7 @@ try:
             print(" Modo:    PADRÃO RÍTMICO DINÂMICO")
 
         print("----------------------------------------------------------------------------")
-        print(f" Atuadores: Strobe: {st_strobe} | Laser Vd: {st_laser_g} | Laser Vm: {st_laser_r} | Motores: {vel_mot}%")
+        print(f" Atuadores: Strobe: {st_strobe} | Globo RGB: ATIVO | Servo SG90: SINCRONIZADO")
         print("----------------------------------------------------------------------------")
         print("Faixa            | Nível e Espectro                             | Status   | Valor / Limiar")
         print("----------------------------------------------------------------------------")

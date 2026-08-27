@@ -2,7 +2,7 @@
  * ==============================================================================
  * PROJETO: Audio to Light (Nó Receptor Sem Fio ESP32-C3 Super Mini)
  * DESCRIÇÃO: Escuta pacotes UDP :5005 transmitidos pela Raspberry Pi (Áudio + Spotify)
- *            e orquestra 8 atuadores via ULN2003 e Ponte H.
+ *            e orquestra o Strobe Branco, Globo RGB e Servo Motor SG90.
  * ==============================================================================
  */
 
@@ -25,17 +25,10 @@ char packetBuffer[2048];
 // 2. MAPEAMENTO DE PINOS GPIO (ESP32-C3 Super Mini)
 // ------------------------------------------------------------------------------
 #define PIN_STROBE_BRANCO    0   // ULN2003 - Graves / Kicks (PWM 15Hz)
-#define PIN_LASER_VERDE      1   // ULN2003 - Pratos / Hi-Hats (Digital)
-#define PIN_LASER_VERMELHO   3   // ULN2003 - Caixas / Transientes (Digital)
 #define PIN_GLOBO_R          4   // ULN2003 - Globo LED Vermelho (PWM)
 #define PIN_GLOBO_G          5   // ULN2003 - Globo LED Verde (PWM)
 #define PIN_GLOBO_B          6   // ULN2003 - Globo LED Azul (PWM)
-
-// Ponte H Bidirecional (Motores)
-#define PIN_MOT_LASER_IN1    7   // Ponte H - Motor Filtro Laser IN1
-#define PIN_MOT_LASER_IN2   10   // Ponte H - Motor Filtro Laser IN2
-#define PIN_MOT_GLOBO_IN1   20   // Ponte H - Motor Globo Giratório IN1
-#define PIN_MOT_GLOBO_IN2   21   // Ponte H - Motor Globo Giratório IN2
+#define PIN_SERVO_GLOBO      7   // Sinal de Controle do Servo SG90 (PWM 50Hz)
 
 #define PIN_LED_ONBOARD      8   // LED de status onboard do ESP32-C3
 
@@ -44,18 +37,13 @@ char packetBuffer[2048];
 // ------------------------------------------------------------------------------
 #define PWM_FREQ_STROBE     15    // 15Hz para efeito Strobe autêntico
 #define PWM_FREQ_GLOBO     100    // 100Hz para blend suave de cores
-#define PWM_FREQ_MOTORES  1000    // 1kHz para motores DC sem ruído audível
-#define PWM_RESOLUTION       8    // 8 bits (0 a 255)
+#define PWM_FREQ_SERVO      50    // 50Hz padrão de servo motores (20ms)
 
-// Canais LEDC (ESP32 Core v2 / v3 compatível)
 #define CH_STROBE     0
 #define CH_GLOBO_R    1
 #define CH_GLOBO_G    2
 #define CH_GLOBO_B    3
-#define CH_MOT_L_IN1  4
-#define CH_MOT_L_IN2  5
-#define CH_MOT_G_IN1  6
-#define CH_MOT_G_IN2  7
+#define CH_SERVO      4
 
 // ------------------------------------------------------------------------------
 // 4. ESTADO CONTEXTUAL E VARIÁVEIS DE CONTROLE
@@ -69,25 +57,12 @@ struct ContextoSpotify {
   unsigned long ultimo_timestamp = 0;
 } spotify;
 
-// Temporizadores não-bloqueantes (millis)
 unsigned long fimPulsoStrobe = 0;
-unsigned long fimPulsoLaserG = 0;
-unsigned long fimPulsoLaserR = 0;
-unsigned long ultimoInversaoGlobo = 0;
 unsigned long ultimoPacoteAudio = 0;
-
-int direcaoGlobo = 1;
-int contadorKicks = 0;
-
-// Variáveis de controle de motor
-float velGloboAtual = 0.0;
-float velGloboAlvo = 0.0;
-float velLaserAtual = 0.0;
-float velLaserAlvo = 0.0;
-int dirLaserAlvo = 1;
+float ladoSaltoServo = 30.0f;
 
 // ------------------------------------------------------------------------------
-// 5. FUNÇÕES AUXILIARES DE ATUADORES
+// 5. FUNÇÕES AUXILIARES DE ATUADORES & SERVO
 // ------------------------------------------------------------------------------
 
 void setPwmDuty(int channel, int duty_0_to_255) {
@@ -104,27 +79,26 @@ void setGloboRGB(float r_pct, float g_pct, float b_pct) {
   setPwmDuty(CH_GLOBO_B, valB);
 }
 
-void setMotorPonteH(int ch_in1, int ch_in2, float velocidade_pct, int direcao) {
-  int duty = (int)(constrain(velocidade_pct, 0.0, 100.0) * 2.55);
-  if (direcao == 1) {
-    setPwmDuty(ch_in2, 0);
-    setPwmDuty(ch_in1, duty);
-  } else if (direcao == -1) {
-    setPwmDuty(ch_in1, 0);
-    setPwmDuty(ch_in2, duty);
-  } else {
-    setPwmDuty(ch_in1, 0);
-    setPwmDuty(ch_in2, 0);
-  }
+// Converte ângulo de 0° a 180° para Duty Cycle de 14 bits a 50Hz (500µs a 2400µs)
+void setServoAngulo(float graus) {
+  graus = constrain(graus, 0.0f, 180.0f);
+  // 50Hz = período de 20000us. Em 14 bits (16383):
+  // 500us (0°)   -> 409
+  // 2400us (180°) -> 1966
+  int duty = 409 + (int)((graus / 180.0f) * (1966 - 409));
+  ledcWrite(CH_SERVO, duty);
+}
+
+void setServoVarredura(float freq_hz, float ang_min, float ang_max, float tempo_s) {
+  float seno = (sin(2.0f * PI * freq_hz * tempo_s) + 1.0f) / 2.0f;
+  float angulo = ang_min + (seno * (ang_max - ang_min));
+  setServoAngulo(angulo);
 }
 
 void desligarTudo() {
   setPwmDuty(CH_STROBE, 0);
-  digitalWrite(PIN_LASER_VERDE, LOW);
-  digitalWrite(PIN_LASER_VERMELHO, LOW);
   setGloboRGB(0, 0, 0);
-  setMotorPonteH(CH_MOT_L_IN1, CH_MOT_L_IN2, 0, 0);
-  setMotorPonteH(CH_MOT_G_IN1, CH_MOT_G_IN2, 0, 0);
+  setServoAngulo(90.0f);
 }
 
 // ------------------------------------------------------------------------------
@@ -169,39 +143,29 @@ void setup() {
   Serial.begin(115200);
   delay(500);
   Serial.println("\n==================================================");
-  Serial.println(" Audio to Light - ESP32-C3 Super Mini Node");
+  Serial.println(" Audio to Light - ESP32-C3 Super Mini (Servo SG90)");
   Serial.println("==================================================");
 
-  // Configuração dos Pinos Digitais
-  pinMode(PIN_LASER_VERDE, OUTPUT);
-  pinMode(PIN_LASER_VERMELHO, OUTPUT);
   pinMode(PIN_LED_ONBOARD, OUTPUT);
-  digitalWrite(PIN_LASER_VERDE, LOW);
-  digitalWrite(PIN_LASER_VERMELHO, LOW);
-  digitalWrite(PIN_LED_ONBOARD, HIGH); // Apagado inicial
+  digitalWrite(PIN_LED_ONBOARD, HIGH);
 
-  // Configuração dos Canais LEDC / PWM
-  ledcSetup(CH_STROBE, PWM_FREQ_STROBE, PWM_RESOLUTION);
+  // Strobe Branco (15Hz / 8 bits)
+  ledcSetup(CH_STROBE, PWM_FREQ_STROBE, 8);
   ledcAttachPin(PIN_STROBE_BRANCO, CH_STROBE);
 
-  ledcSetup(CH_GLOBO_R, PWM_FREQ_GLOBO, PWM_RESOLUTION);
+  // Globo RGB (100Hz / 8 bits)
+  ledcSetup(CH_GLOBO_R, PWM_FREQ_GLOBO, 8);
   ledcAttachPin(PIN_GLOBO_R, CH_GLOBO_R);
 
-  ledcSetup(CH_GLOBO_G, PWM_FREQ_GLOBO, PWM_RESOLUTION);
+  ledcSetup(CH_GLOBO_G, PWM_FREQ_GLOBO, 8);
   ledcAttachPin(PIN_GLOBO_G, CH_GLOBO_G);
 
-  ledcSetup(CH_GLOBO_B, PWM_FREQ_GLOBO, PWM_RESOLUTION);
+  ledcSetup(CH_GLOBO_B, PWM_FREQ_GLOBO, 8);
   ledcAttachPin(PIN_GLOBO_B, CH_GLOBO_B);
 
-  ledcSetup(CH_MOT_L_IN1, PWM_FREQ_MOTORES, PWM_RESOLUTION);
-  ledcAttachPin(PIN_MOT_LASER_IN1, CH_MOT_L_IN1);
-  ledcSetup(CH_MOT_L_IN2, PWM_FREQ_MOTORES, PWM_RESOLUTION);
-  ledcAttachPin(PIN_MOT_LASER_IN2, CH_MOT_L_IN2);
-
-  ledcSetup(CH_MOT_G_IN1, PWM_FREQ_MOTORES, PWM_RESOLUTION);
-  ledcAttachPin(PIN_MOT_GLOBO_IN1, CH_MOT_G_IN1);
-  ledcSetup(CH_MOT_G_IN2, PWM_FREQ_MOTORES, PWM_RESOLUTION);
-  ledcAttachPin(PIN_MOT_GLOBO_IN2, CH_MOT_G_IN2);
+  // Servo SG90 (50Hz / 14 bits para precisão angular)
+  ledcSetup(CH_SERVO, PWM_FREQ_SERVO, 14);
+  ledcAttachPin(PIN_SERVO_GLOBO, CH_SERVO);
 
   desligarTudo();
 
@@ -211,15 +175,14 @@ void setup() {
   WiFi.begin(WIFI_SSID, WIFI_PASS);
 
   while (WiFi.status() != WL_CONNECTED) {
-    digitalWrite(PIN_LED_ONBOARD, !digitalRead(PIN_LED_ONBOARD)); // Pisca LED
+    digitalWrite(PIN_LED_ONBOARD, !digitalRead(PIN_LED_ONBOARD));
     delay(200);
     Serial.print(".");
   }
 
-  digitalWrite(PIN_LED_ONBOARD, LOW); // LED Aceso (Conectado)
+  digitalWrite(PIN_LED_ONBOARD, LOW);
   Serial.printf("\nWi-Fi Conectado! IP do ESP32: %s\n", WiFi.localIP().toString().c_str());
 
-  // Inicia Socket UDP
   udp.begin(UDP_PORT);
   Serial.printf("Escutando pacotes UDP na porta %d...\n", UDP_PORT);
 }
@@ -231,14 +194,12 @@ void loop() {
   unsigned long agora = millis();
   float tempo_s = agora / 1000.0f;
 
-  // Reconexão Wi-Fi automática
   if (WiFi.status() != WL_CONNECTED) {
     WiFi.reconnect();
     delay(500);
     return;
   }
 
-  // 1. LEITURA DE PACOTES UDP
   int packetSize = udp.parsePacket();
   if (packetSize) {
     int len = udp.read(packetBuffer, sizeof(packetBuffer) - 1);
@@ -251,7 +212,6 @@ void loop() {
       if (!error) {
         const char* tipo = doc["tipo"] | "audio";
 
-        // --- PACOTE SPOTIFY (O CÉREBRO) ---
         if (strcmp(tipo, "spotify") == 0) {
           spotify.ativo = true;
           spotify.tocando = doc["tocando"] | false;
@@ -260,92 +220,51 @@ void loop() {
           spotify.modo_sugerido = doc["modo_sugerido"] | "media_energia";
           spotify.ultimo_timestamp = agora;
         }
-        // --- PACOTE ÁUDIO (O REFLEXO) ---
         else {
           ultimoPacoteAudio = agora;
 
-          // Determina o modo atual
           bool spotify_online = spotify.ativo && (agora - spotify.ultimo_timestamp < 4000);
           String modo_atual = "fallback";
           if (spotify_online) {
             modo_atual = spotify.tocando ? spotify.modo_sugerido : "standby";
           }
 
-          // Extração das frequências
           JsonObject faixas = doc["faixas"];
           JsonObject graves = faixas["graves"];
           JsonObject medios = faixas["medios"];
           JsonObject agudos = faixas["agudos"];
-          JsonObject super_agudos = faixas["super_agudos"];
 
           bool ativo_grave = graves["ativo"] | false;
           bool pico_grave = graves["pico"] | false;
           float nivel_grave = graves["nivel"] | 0.0f;
-
           float nivel_medios = medios["nivel"] | 0.3f;
-          bool ativo_medios = medios["ativo"] | false;
-
           bool ativo_agudo = agudos["ativo"] | false;
-          bool pico_agudo = agudos["pico"] | false;
-          float nivel_agudo = agudos["nivel"] | 0.0f;
-
-          bool pico_super = super_agudos["pico"] | false;
 
           // --- COREOGRAFIA 1: GLOBO RGB ---
           atualizarPaletaGlobo(modo_atual, nivel_medios, tempo_s);
 
-          // --- COREOGRAFIA 2: MOTORES BIDIRECIONAIS (PONTE H) ---
-          unsigned long tempoVarredura = (modo_atual == "alta_energia") ? 4000 : 6500;
-          if (agora - ultimoInversaoGlobo >= tempoVarredura) {
-            direcaoGlobo = (direcaoGlobo == 1) ? -1 : 1;
-            ultimoInversaoGlobo = agora;
-          }
-
-          // Inversão por impacto no Drop/Kick pesado
-          if (pico_grave && nivel_grave >= 0.85f) {
-            contadorKicks++;
-            if (contadorKicks >= 4) {
-              direcaoGlobo = (direcaoGlobo == 1) ? -1 : 1;
-              contadorKicks = 0;
-              ultimoInversaoGlobo = agora;
-            }
-          }
-
+          // --- COREOGRAFIA 2: SERVO MOTOR SG90 ---
           if (modo_atual == "alta_energia") {
-            velGloboAlvo = 100.0f;
-            // Oscilação rápida do filtro do laser a 2.5Hz
-            float senoLaser = sin(2.0f * PI * 2.5f * tempo_s);
-            dirLaserAlvo = (senoLaser >= 0) ? 1 : -1;
-            velLaserAlvo = fabs(senoLaser) * 100.0f;
+            if (pico_grave && nivel_grave >= 0.70f) {
+              ladoSaltoServo = (ladoSaltoServo <= 90.0f) ? 150.0f : 30.0f;
+              setServoAngulo(ladoSaltoServo);
+            } else {
+              setServoVarredura(1.0f, 20.0f, 160.0f, tempo_s);
+            }
           } 
           else if (modo_atual == "suave") {
-            velGloboAlvo = 25.0f;
-            velLaserAlvo = 0.0f;
+            setServoVarredura(0.2f, 50.0f, 130.0f, tempo_s);
           } 
           else if (modo_atual == "standby") {
             if (ativo_grave || pico_grave || ativo_agudo) {
-              velGloboAlvo = 45.0f;
-              velLaserAlvo = 30.0f;
-              dirLaserAlvo = 1;
+              setServoVarredura(0.4f, 45.0f, 135.0f, tempo_s);
             } else {
-              velGloboAlvo = 0.0f;
-              velLaserAlvo = 0.0f;
+              setServoAngulo(90.0f);
             }
           } 
           else { // media_energia / fallback
-            velGloboAlvo = 60.0f;
-            if (ativo_agudo || pico_agudo) {
-              float senoLaser = sin(2.0f * PI * 1.8f * tempo_s);
-              dirLaserAlvo = (senoLaser >= 0) ? 1 : -1;
-              velLaserAlvo = fabs(senoLaser) * 75.0f;
-            } else {
-              velLaserAlvo = 35.0f;
-              dirLaserAlvo = 1;
-            }
+            setServoVarredura(0.5f, 30.0f, 150.0f, tempo_s);
           }
-
-          setMotorPonteH(CH_MOT_G_IN1, CH_MOT_G_IN2, velGloboAlvo, direcaoGlobo);
-          setMotorPonteH(CH_MOT_L_IN1, CH_MOT_L_IN2, velLaserAlvo, dirLaserAlvo);
 
           // --- COREOGRAFIA 3: STROBE BRANCO (GRAVES) ---
           if (modo_atual == "suave") {
@@ -361,35 +280,16 @@ void loop() {
               fimPulsoStrobe = agora + 70;
             }
           }
-
-          // --- COREOGRAFIA 4: LASERS VERDE E VERMELHO ---
-          if (modo_atual != "suave") {
-            if (pico_agudo || (ativo_agudo && nivel_agudo >= 0.40f)) {
-              digitalWrite(PIN_LASER_VERDE, HIGH);
-              fimPulsoLaserG = agora + 50;
-            }
-            if ((pico_grave && nivel_grave >= 0.70f) || pico_super) {
-              digitalWrite(PIN_LASER_VERMELHO, HIGH);
-              fimPulsoLaserR = agora + 60;
-            }
-          }
         }
       }
     }
   }
 
-  // 2. GESTÃO DE SUSTENTAÇÃO TEMPORAL (PULSOS)
   if (agora >= fimPulsoStrobe) {
     setPwmDuty(CH_STROBE, 0);
   }
-  if (agora >= fimPulsoLaserG) {
-    digitalWrite(PIN_LASER_VERDE, LOW);
-  }
-  if (agora >= fimPulsoLaserR) {
-    digitalWrite(PIN_LASER_VERMELHO, LOW);
-  }
 
-  // 3. FAILSAFE: Se ficar sem pacotes por mais de 4 segundos, desliga suavemente
+  // Failsafe se ficar sem pacotes por mais de 4s
   if (agora - ultimoPacoteAudio > 4000 && ultimoPacoteAudio > 0) {
     desligarTudo();
   }

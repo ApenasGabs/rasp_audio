@@ -7,10 +7,11 @@ Este documento fornece o **contexto completo do projeto**, arquitetura de softwa
 ## 📌 1. Visão Geral e Objetivo
 
 Sistema de **Show de Iluminação Rítmico Inteligente (Stage Lighting Controller)** operando de forma híbrida e modular:
-1. **Central de Processamento (Raspberry Pi 3):**
-   - **O Reflexo:** Microfone USB com FFT e Onset Detection com Baseline Assimétrica em tempo real.
-   - **O Cérebro:** Integração Spotify Web API via `spotipy` com inferência de gênero, energia e seções estruturais.
+1. **Central de Processamento (Raspberry Pi 3 ou PC):**
+   - **O Reflexo:** Microfone USB com FFT e Onset Detection com Baseline Assimétrica em tempo real (`servidor.py`).
+   - **O Cérebro:** Integração Spotify Web API via `spotipy` com inferência de gênero, energia e seções estruturais (`servidor_spotify.py`).
    - **Transmissão:** Broadcast UDP de pacotes multiplexados na porta `5005` via rede Wi-Fi.
+   - **Gerador de Teste Contínuo:** `gerador_teste_udp.py` para testes sem fio sem precisar de som.
 2. **Nó de Atuadores (Raspberry Pi GPIO ou ESP32-C3 Super Mini Sem Fio):**
    - **⚪ Strobe Branco (12V):** Pisca em frequência estroboscópica de 15Hz nas batidas de grave / kick.
    - **🌈 Globo RGB (Cores):** Modulação de paletas contextuais (cores frias no calmo, quentes no drop/refrão).
@@ -22,11 +23,13 @@ Sistema de **Show de Iluminação Rítmico Inteligente (Stage Lighting Controlle
 
 ```mermaid
 graph TD
-    subgraph Central (Raspberry Pi 3)
+    subgraph Central (Raspberry Pi 3 ou PC)
         MIC[Microfone USB] --> S_AUD[servidor.py]
         SP[Spotify Web API] --> S_SP[servidor_spotify.py]
+        TEST[Gerador de Teste] --> G_UDP[gerador_teste_udp.py]
         S_AUD -->|UDP Broadcast :5005 Wi-Fi| NET((Rede Wi-Fi / UDP))
         S_SP -->|UDP Broadcast :5005 Wi-Fi| NET
+        G_UDP -->|UDP Broadcast :5005 Wi-Fi| NET
     end
 
     subgraph Opção 1: Controle Direto na RPi
@@ -54,30 +57,20 @@ graph TD
 
 ---
 
-## 🎛️ 4. Coreografia e Dinâmica do Servo SG90
-
-| Modo Spotify / Áudio | Strobe Branco (Graves) | Globo RGB (Cores) | Servo Motor SG90 (Movimento) |
-| :--- | :--- | :--- | :--- |
-| **Alta Energia / Drop** | **Strobe Intenso 15Hz @ 50%** | **Cores Quentes & Rotação Eufórica** (Magenta, Vermelho, Amarelo) | **Varredura rápida (20°–160° a 1.0Hz) + Saltos de 30° a 150° a cada kick forte.** |
-| **Média Energia / Versos** | Strobe Rítmico @ 45% | Transição Suave (Violeta, Azul, Dourado) | **Varredura senoidal contínua (30°–150° a 0.5Hz).** |
-| **Suave / Lofi / Acústica** | Brilho pulsante suave (sem estrobo) | Tons Frios Relaxantes (Azul / Ciano) | **Movimento pendular lento (50°–130° a 0.2Hz).** |
-| **Standby** | Apagado (ou reflexo se houver som físico) | Desligado | **Centralizado em 90° (repouso silencioso).** |
-
----
-
-## 📂 5. Estrutura dos Arquivos do Repositório
+## 📂 4. Estrutura dos Arquivos do Repositório
 
 ```
 rasp_audio/
 ├── servidor.py             # Reflexo: Microfone + FFT + Detecção Rítmica
 ├── servidor_spotify.py     # Cérebro: Contexto Spotify + Proteção Rate Limit
+├── gerador_teste_udp.py    # Gerador contínuo de teste UDP para calibrar o ESP32-C3
 ├── cliente_leds.py         # Orquestrador local na Raspberry Pi (Strobe + Globo + SG90)
 ├── cliente_espectro.py     # Monitor visual ASCII híbrido
 ├── config_hardware.json    # Configuração de pinagem e limites do servo
 ├── drivers_hardware.py     # Classes de hardware (LuzPWM, GloboRGB, ServoSG90)
 ├── test_hardware.py        # Teste de bancada (Strobe + Globo RGB + Servo SG90)
 ├── esp32_c3_node/          # Nó Receptor Sem Fio para ESP32-C3 Super Mini
-│   ├── esp32_c3_node.ino   # Firmware Arduino / C++ para o ESP32-C3
+│   ├── esp32_c3_node.ino   # Firmware Arduino / C++ com auto-teste e LEDC universal
 │   ├── platformio.ini      # Configuração para compilação via PlatformIO
 │   └── README.md           # Guia de gravação e ligação do ESP32-C3
 ├── CONTEXTO.md             # Guia completo para desenvolvedores e IAs
@@ -88,21 +81,23 @@ rasp_audio/
 
 ---
 
-## 🚀 6. Como Executar
+## 🚀 5. Como Testar e Operar o ESP32-C3 Sem Fio
 
-### Opção A: Com o ESP32-C3 Super Mini Sem Fio
-1. Na **Raspberry Pi 3**:
+### Passo 1: Testar a transmissão com o Gerador Contínuo
+1. Na **Raspberry Pi** (ou no seu PC):
    ```bash
    cd ~/rasp_audio
-   python3 servidor.py
-   python3 servidor_spotify.py
+   python3 gerador_teste_udp.py
    ```
-2. Ligue o **ESP32-C3 Super Mini** (alimentado com 5V e conectado ao ULN2003 e Servo SG90).
+   *(Ou se quiser enviar direto para o IP do ESP32: `python3 gerador_teste_udp.py 192.168.1.150`)*
 
-### Opção B: Direto na Raspberry Pi
+2. O ESP32-C3 receberá o fluxo simulado de 120 BPM e começará a mover o Servo SG90 e piscar o Strobe e as cores do Globo imediatamente!
+
+### Passo 2: Executar o Show Real com Microfone + Spotify
 ```bash
-cd ~/rasp_audio
+# Terminal 1: Captura de Áudio (Microfone USB)
 python3 servidor.py
+
+# Terminal 2: Contexto Spotify
 python3 servidor_spotify.py
-python3 cliente_leds.py
 ```

@@ -6,6 +6,7 @@
  * ==============================================================================
  */
 
+#include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <ArduinoJson.h>
@@ -14,8 +15,8 @@
 // ------------------------------------------------------------------------------
 // 1. CONFIGURAÇÕES DE REDE WI-FI & UDP
 // ------------------------------------------------------------------------------
-const char* WIFI_SSID = "SEU_WIFI_NOME";        // << Substitua pelo nome do seu Wi-Fi
-const char* WIFI_PASS = "SUA_WIFI_SENHA";       // << Substitua pela senha do seu Wi-Fi
+const char* WIFI_SSID = "IOT";      
+const char* WIFI_PASS = "982713506";    
 const unsigned int UDP_PORT = 5005;
 
 WiFiUDP udp;
@@ -33,7 +34,7 @@ char packetBuffer[2048];
 #define PIN_LED_ONBOARD      8   // LED de status onboard do ESP32-C3
 
 // ------------------------------------------------------------------------------
-// 3. FREQUÊNCIAS PWM
+// 3. CANAIS E CONFIGURAÇÃO PWM (LEDC ESP32)
 // ------------------------------------------------------------------------------
 #define PWM_FREQ_STROBE     15    // 15Hz para efeito Strobe autêntico
 #define PWM_FREQ_GLOBO     100    // 100Hz para blend suave de cores
@@ -59,43 +60,34 @@ struct ContextoSpotify {
 
 unsigned long fimPulsoStrobe = 0;
 unsigned long ultimoPacoteAudio = 0;
-unsigned long totalPacotesRecebidos = 0;
 float ladoSaltoServo = 30.0f;
 
 // ------------------------------------------------------------------------------
-// 5. FUNÇÕES AUXILIARES DE PWM (Compatível com ESP32 Core v2 e v3)
+// 5. FUNÇÕES AUXILIARES DE ATUADORES & SERVO
 // ------------------------------------------------------------------------------
 
-void writePwm(int pin, int channel, int duty) {
-  #if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
-    ledcWrite(pin, duty);
-  #else
-    ledcWrite(channel, duty);
-  #endif
-}
-
-void setPwmDuty(int pin, int channel, int duty_0_to_255) {
+void setPwmDuty(int channel, int duty_0_to_255) {
   duty_0_to_255 = constrain(duty_0_to_255, 0, 255);
-  writePwm(pin, channel, duty_0_to_255);
+  ledcWrite(channel, duty_0_to_255);
 }
 
 void setGloboRGB(float r_pct, float g_pct, float b_pct) {
-  int valR = (int)(constrain(r_pct, 0.0f, 100.0f) * 2.55f);
-  int valG = (int)(constrain(g_pct, 0.0f, 100.0f) * 2.55f);
-  int valB = (int)(constrain(b_pct, 0.0f, 100.0f) * 2.55f);
-  setPwmDuty(PIN_GLOBO_R, CH_GLOBO_R, valR);
-  setPwmDuty(PIN_GLOBO_G, CH_GLOBO_G, valG);
-  setPwmDuty(PIN_GLOBO_B, CH_GLOBO_B, valB);
+  int valR = (int)(constrain(r_pct, 0.0, 100.0) * 2.55);
+  int valG = (int)(constrain(g_pct, 0.0, 100.0) * 2.55);
+  int valB = (int)(constrain(b_pct, 0.0, 100.0) * 2.55);
+  setPwmDuty(CH_GLOBO_R, valR);
+  setPwmDuty(CH_GLOBO_G, valG);
+  setPwmDuty(CH_GLOBO_B, valB);
 }
 
-// Converte ângulo de 0° a 180° para sinal de 50Hz (500µs a 2400µs em 14 bits)
+// Converte ângulo de 0° a 180° para Duty Cycle de 14 bits a 50Hz (500µs a 2400µs)
 void setServoAngulo(float graus) {
   graus = constrain(graus, 0.0f, 180.0f);
-  // Período de 20ms = 20000us. Em 14 bits (16383):
+  // 50Hz = período de 20000us. Em 14 bits (16383):
   // 500us (0°)   -> 409
   // 2400us (180°) -> 1966
   int duty = 409 + (int)((graus / 180.0f) * (1966 - 409));
-  writePwm(PIN_SERVO_GLOBO, CH_SERVO, duty);
+  ledcWrite(CH_SERVO, duty);
 }
 
 void setServoVarredura(float freq_hz, float ang_min, float ang_max, float tempo_s) {
@@ -105,33 +97,9 @@ void setServoVarredura(float freq_hz, float ang_min, float ang_max, float tempo_
 }
 
 void desligarTudo() {
-  setPwmDuty(PIN_STROBE_BRANCO, CH_STROBE, 0);
+  setPwmDuty(CH_STROBE, 0);
   setGloboRGB(0, 0, 0);
   setServoAngulo(90.0f);
-}
-
-// Auto-teste inicial de hardware no boot
-void executarAutoTeste() {
-  Serial.println("[AUTO-TESTE] Testando componentes fisicos...");
-
-  // 1. Strobe Branco
-  setPwmDuty(PIN_STROBE_BRANCO, CH_STROBE, 128);
-  delay(300);
-  setPwmDuty(PIN_STROBE_BRANCO, CH_STROBE, 0);
-
-  // 2. Cores do Globo
-  setGloboRGB(100, 0, 0); delay(250);
-  setGloboRGB(0, 100, 0); delay(250);
-  setGloboRGB(0, 0, 100); delay(250);
-  setGloboRGB(0, 0, 0);
-
-  // 3. Servo SG90 (0° -> 90° -> 180° -> 90°)
-  setServoAngulo(0);   delay(400);
-  setServoAngulo(90);  delay(400);
-  setServoAngulo(180); delay(400);
-  setServoAngulo(90);  delay(300);
-
-  Serial.println("[AUTO-TESTE] Concluido com sucesso!");
 }
 
 // ------------------------------------------------------------------------------
@@ -174,43 +142,36 @@ void atualizarPaletaGlobo(String modo, float nivel_medios, float tempo_s) {
 // ------------------------------------------------------------------------------
 void setup() {
   Serial.begin(115200);
-  delay(800);
+  delay(500);
   Serial.println("\n==================================================");
   Serial.println(" Audio to Light - ESP32-C3 Super Mini (Servo SG90)");
   Serial.println("==================================================");
 
   pinMode(PIN_LED_ONBOARD, OUTPUT);
-  digitalWrite(PIN_LED_ONBOARD, HIGH); // Apagado
+  digitalWrite(PIN_LED_ONBOARD, HIGH);
 
-  // Configuração PWM compatível com ESP32 Core v2 e Core v3
-  #if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
-    ledcAttach(PIN_STROBE_BRANCO, PWM_FREQ_STROBE, 8);
-    ledcAttach(PIN_GLOBO_R, PWM_FREQ_GLOBO, 8);
-    ledcAttach(PIN_GLOBO_G, PWM_FREQ_GLOBO, 8);
-    ledcAttach(PIN_GLOBO_B, PWM_FREQ_GLOBO, 8);
-    ledcAttach(PIN_SERVO_GLOBO, PWM_FREQ_SERVO, 14);
-  #else
-    ledcSetup(CH_STROBE, PWM_FREQ_STROBE, 8);
-    ledcAttachPin(PIN_STROBE_BRANCO, CH_STROBE);
+  // Strobe Branco (15Hz / 8 bits)
+  ledcSetup(CH_STROBE, PWM_FREQ_STROBE, 8);
+  ledcAttachPin(PIN_STROBE_BRANCO, CH_STROBE);
 
-    ledcSetup(CH_GLOBO_R, PWM_FREQ_GLOBO, 8);
-    ledcAttachPin(PIN_GLOBO_R, CH_GLOBO_R);
+  // Globo RGB (100Hz / 8 bits)
+  ledcSetup(CH_GLOBO_R, PWM_FREQ_GLOBO, 8);
+  ledcAttachPin(PIN_GLOBO_R, CH_GLOBO_R);
 
-    ledcSetup(CH_GLOBO_G, PWM_FREQ_GLOBO, 8);
-    ledcAttachPin(PIN_GLOBO_G, CH_GLOBO_G);
+  ledcSetup(CH_GLOBO_G, PWM_FREQ_GLOBO, 8);
+  ledcAttachPin(PIN_GLOBO_G, CH_GLOBO_G);
 
-    ledcSetup(CH_GLOBO_B, PWM_FREQ_GLOBO, 8);
-    ledcAttachPin(PIN_GLOBO_B, CH_GLOBO_B);
+  ledcSetup(CH_GLOBO_B, PWM_FREQ_GLOBO, 8);
+  ledcAttachPin(PIN_GLOBO_B, CH_GLOBO_B);
 
-    ledcSetup(CH_SERVO, PWM_FREQ_SERVO, 14);
-    ledcAttachPin(PIN_SERVO_GLOBO, CH_SERVO);
-  #endif
+  // Servo SG90 (50Hz / 14 bits para precisão angular)
+  ledcSetup(CH_SERVO, PWM_FREQ_SERVO, 14);
+  ledcAttachPin(PIN_SERVO_GLOBO, CH_SERVO);
 
-  // Executa auto-teste rápido dos atuadores físicos
-  executarAutoTeste();
+  desligarTudo();
 
   // Conexão Wi-Fi
-  Serial.printf("[Wi-Fi] Conectando a: %s ...\n", WIFI_SSID);
+  Serial.printf("Conectando ao Wi-Fi: %s ...\n", WIFI_SSID);
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
 
@@ -220,11 +181,11 @@ void setup() {
     Serial.print(".");
   }
 
-  digitalWrite(PIN_LED_ONBOARD, LOW); // LED Aceso = Conectado
-  Serial.printf("\n[Wi-Fi] Conectado! IP do ESP32: %s\n", WiFi.localIP().toString().c_str());
+  digitalWrite(PIN_LED_ONBOARD, LOW);
+  Serial.printf("\nWi-Fi Conectado! IP do ESP32: %s\n", WiFi.localIP().toString().c_str());
 
   udp.begin(UDP_PORT);
-  Serial.printf("[UDP] Aguardando pacotes na porta %d...\n", UDP_PORT);
+  Serial.printf("Escutando pacotes UDP na porta %d...\n", UDP_PORT);
 }
 
 // ------------------------------------------------------------------------------
@@ -245,17 +206,11 @@ void loop() {
     int len = udp.read(packetBuffer, sizeof(packetBuffer) - 1);
     if (len > 0) {
       packetBuffer[len] = '\0';
-      totalPacotesRecebidos++;
-
-      // Pisca rápido o LED onboard indicando tráfego de rede ativo
-      digitalWrite(PIN_LED_ONBOARD, (totalPacotesRecebidos % 2 == 0) ? LOW : HIGH);
 
       StaticJsonDocument<1536> doc;
       DeserializationError error = deserializeJson(doc, packetBuffer);
 
-      if (error) {
-        Serial.printf("[JSON ERRO] %s\n", error.c_str());
-      } else {
+      if (!error) {
         const char* tipo = doc["tipo"] | "audio";
 
         if (strcmp(tipo, "spotify") == 0) {
@@ -285,12 +240,6 @@ void loop() {
           float nivel_grave = graves["nivel"] | 0.0f;
           float nivel_medios = medios["nivel"] | 0.3f;
           bool ativo_agudo = agudos["ativo"] | false;
-
-          // Log de status a cada 40 pacotes (a cada ~2s)
-          if (totalPacotesRecebidos % 40 == 0) {
-            Serial.printf("[UDP #%lu] Modo: %s | Grave: %.2f | Servo SG90 Ativo\n",
-              totalPacotesRecebidos, modo_atual.c_str(), nivel_grave);
-          }
 
           // --- COREOGRAFIA 1: GLOBO RGB ---
           atualizarPaletaGlobo(modo_atual, nivel_medios, tempo_s);
@@ -322,13 +271,13 @@ void loop() {
           if (modo_atual == "suave") {
             if (ativo_grave || nivel_grave > 0.3f) {
               int duty = (int)(min(35.0f, nivel_grave * 35.0f) * 2.55f);
-              setPwmDuty(PIN_STROBE_BRANCO, CH_STROBE, duty);
+              setPwmDuty(CH_STROBE, duty);
               fimPulsoStrobe = agora + 70;
             }
           } else {
             if (ativo_grave || pico_grave || nivel_grave >= 0.40f) {
               int duty = (modo_atual == "alta_energia") ? (int)(50.0f * 2.55f) : (int)(45.0f * 2.55f);
-              setPwmDuty(PIN_STROBE_BRANCO, CH_STROBE, duty);
+              setPwmDuty(CH_STROBE, duty);
               fimPulsoStrobe = agora + 70;
             }
           }
@@ -338,9 +287,10 @@ void loop() {
   }
 
   if (agora >= fimPulsoStrobe) {
-    setPwmDuty(PIN_STROBE_BRANCO, CH_STROBE, 0);
+    setPwmDuty(CH_STROBE, 0);
   }
 
+  // Failsafe se ficar sem pacotes por mais de 4s
   if (agora - ultimoPacoteAudio > 4000 && ultimoPacoteAudio > 0) {
     desligarTudo();
   }

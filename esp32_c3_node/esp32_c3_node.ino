@@ -1,7 +1,7 @@
 /*
  * ==============================================================================
- * PROJETO: Audio to Light - NÓ RECEPTOR ESP32-C3 SUPER MINI (COM DMX512 + WEB SERVER)
- * VERSÃO: 4.0 (Sincronismo Musical Calibrado via Logs Reais + Filtro Anti-Glitch)
+ * PROJETO: Audio to Light - NÓ RECEPTOR ESP32-C3 SUPER MINI (COM DMX512 + WEB STUDIO)
+ * VERSÃO: 5.0 (Seleção Dinâmica de Listas de Padrões para Bumbo e Vocal + Web GUI)
  * ==============================================================================
  */
 
@@ -13,7 +13,7 @@
 #include <math.h>
 
 // ------------------------------------------------------------------------------
-// 1. CONFIGURAÇÃO WI-FI, UDP, WEB SERVER & PREFERENCES
+// 1. CONFIGURAÇÃO WI-FI, UDP & WEB SERVER
 // ------------------------------------------------------------------------------
 const char* WIFI_SSID = "SEU_WIFI_NOME";        // << Coloque o nome do seu Wi-Fi
 const char* WIFI_PASS = "SUA_WIFI_SENHA";       // << Coloque a senha do seu Wi-Fi
@@ -41,42 +41,48 @@ bool dmxInicializado = false;
 #define PIN_LED_ONBOARD      8   // LED de status onboard
 
 // ------------------------------------------------------------------------------
-// 3. BUFFER DMX512 & PARÂMETROS CALIBRADOS COM BASE NOS DADOS REAIS
+// 3. BUFFER DMX512 & ESTRUTURAS DE LISTAS DE PADRÕES CUSTOMIZÁVEIS
 // ------------------------------------------------------------------------------
 uint8_t dmxCanais[16];
 unsigned long ultimoEnvioDmx = 0;
-
 int modoOperacaoWeb = 0; // 0 = Áudio Automático, 1 = Manual Web
 
+// LISTAS DE PADRÕES DINÂMICAS CONFIGURÁVEIS PELA WEB (Máximo de 20 padrões em cada)
+#define MAX_PADROES 20
+
+uint8_t listaBumbo[MAX_PADROES] = {70, 90, 110, 130, 40, 55};
+int totalListaBumbo = 6;
+int indiceBumbo = 0;
+
+uint8_t listaVocal[MAX_PADROES] = {25, 85, 120, 160, 190, 215};
+int totalListaVocal = 6;
+int indiceVocal = 0;
+
+// Parâmetros de calibração
 struct ParametrosCalibracao {
-  int zoomMinimo = 180;        // Tamanho base imersivo e amplo
-  int zoomMaximo = 255;        // Explosão total no kick
-  int sensibilidadeVocal = 175;// Ondulação vocal limpa
-  int velocidadeRotacao = 170; // Rotação majestosa
+  int zoomMinimo = 180;
+  int zoomMaximo = 255;
+  int sensibilidadeVocal = 175;
+  int velocidadeRotacao = 170;
+  int batidasPorTroca = 4;      // Troca padrão a cada 4 batidas
+  float thresholdVocal = 0.28f; // Gatilho de início de voz
 } calib;
-
-// Lista de Padrões Grandes e Imersivos (Túnel, Planos 3D, Espirais, Ondas)
-const uint8_t padroesGrandes[] = {70, 90, 110, 130, 40, 55, 145, 175};
-const int totalPadroesGrandes = sizeof(padroesGrandes) / sizeof(padroesGrandes[0]);
-int indicePadraoGrande = 0;
-
-// Lista de Padrões Reativos (Glitches, Estrelas, Túneis Rápidos)
-const uint8_t padroesReativos[] = {25, 85, 120, 160, 190, 215, 235};
-const int totalPadroesReativos = sizeof(padroesReativos) / sizeof(padroesReativos[0]);
-int indicePadraoReativo = 0;
 
 // Cores Sólidas de Alto Contraste
 const uint8_t coresLaser[] = {12, 22, 32, 42, 52, 62, 72};
 const int totalCores = sizeof(coresLaser) / sizeof(coresLaser[0]);
 int indiceCor = 0;
 
-// CONTROLE RÍTMICO CALIBRADO (FILTRO DE REFRACTORY PERIOD / DEBOUNCE)
+// Variáveis de Controle Rítmico e Vocal
 unsigned long ultimoKickValido = 0;
-const unsigned long COOLDOWN_KICK_MS = 260; // Ignora repetições dentro de 260ms (49.6% de falsos triggers eliminados!)
-int contadorCompasso = 0;
+const unsigned long COOLDOWN_KICK_MS = 260; // Filtro anti-glitch
+int contadorBatidasBumbo = 0;
 
 float zoomAtual = 180.0f;
 float vocalFiltrado = 0.0f;
+bool vozAtiva = false;
+bool vozEstavaAtiva = false;
+unsigned long fimSustentacaoVoz = 0;
 unsigned long fimImpactoKick = 0;
 
 // ------------------------------------------------------------------------------
@@ -110,6 +116,9 @@ void inicializarDMX() {
   pinMode(PIN_DMX_TX, OUTPUT);
   digitalWrite(PIN_DMX_TX, HIGH);
   memset(dmxCanais, 0, sizeof(dmxCanais));
+  dmxCanais[0] = 50; // Luz sempre aberta e ativa
+  dmxCanais[1] = 128;
+  dmxCanais[14] = 255;
   dmxInicializado = true;
 }
 
@@ -129,16 +138,33 @@ void enviarFrameDMX() {
   Serial1.write(dmxCanais, 16);
 }
 
-void atualizarLaserDMX_Audio(String modo, float nivel_graves, bool pico_grave, float nivel_vocal, float tempo_s, float deltaTempo, unsigned long agora) {
-  if (modo == "standby") {
-    dmxCanais[0] = 0;
-    dmxCanais[1] = 0;
-    dmxCanais[2] = 0;
-    dmxCanais[4] = 0;
-    return;
+void parseListaString(String str, uint8_t* lista, int& total) {
+  total = 0;
+  int inicio = 0;
+  while (inicio < str.length() && total < MAX_PADROES) {
+    int virgula = str.indexOf(',', inicio);
+    if (virgula == -1) virgula = str.length();
+    String pedaco = str.substring(inicio, virgula);
+    pedaco.trim();
+    if (pedaco.length() > 0) {
+      lista[total++] = (uint8_t)constrain(pedaco.toInt(), 0, 255);
+    }
+    inicio = virgula + 1;
   }
+}
 
-  dmxCanais[0] = 50;  // Manual Console
+String listaParaString(uint8_t* lista, int total) {
+  String s = "";
+  for (int i = 0; i < total; i++) {
+    if (i > 0) s += ",";
+    s += String(lista[i]);
+  }
+  return s;
+}
+
+void atualizarLaserDMX_Audio(String modo, float nivel_graves, bool pico_grave, float nivel_vocal, float tempo_s, float deltaTempo, unsigned long agora) {
+  // O laser NUNCA desliga: fica sempre aceso em CH1 = 50
+  dmxCanais[0] = 50;  // Manual Console contínuo
   dmxCanais[1] = 128;
   dmxCanais[13] = 0;
   dmxCanais[14] = 255;
@@ -146,23 +172,44 @@ void atualizarLaserDMX_Audio(String modo, float nivel_graves, bool pico_grave, f
   dmxCanais[6] = 0;
 
   // -------------------------------------------------------------------------
-  // A. PROCESSAMENTO RÍTMICO COM FILTRO ANTI-GLITCH (1 BATIDA = 1 IMPACTO)
+  // A. DETECÇÃO E FILTRAGEM VOCAL (Gatilho da Voz)
+  // -------------------------------------------------------------------------
+  vocalFiltrado = (vocalFiltrado * 0.70f) + (nivel_vocal * 0.30f);
+
+  if (vocalFiltrado >= calib.thresholdVocal) {
+    fimSustentacaoVoz = agora + 350; // Sustenta o padrão de voz por 350ms
+    if (!vozEstavaAtiva && totalListaVocal > 0) {
+      // Nova frase vocal iniciada: pula para o próximo padrão da lista de vocal!
+      indiceVocal = (indiceVocal + 1) % totalListaVocal;
+    }
+    vozEstavaAtiva = true;
+  } else {
+    if (agora > fimSustentacaoVoz) {
+      vozEstavaAtiva = false;
+    }
+  }
+
+  vozAtiva = (agora < fimSustentacaoVoz);
+
+  // -------------------------------------------------------------------------
+  // B. PROCESSAMENTO DO BUMBO (Rotação Rítmica por Compasso)
   // -------------------------------------------------------------------------
   bool kickReal = false;
   if (pico_grave && (agora - ultimoKickValido >= COOLDOWN_KICK_MS)) {
     kickReal = true;
     ultimoKickValido = agora;
-    fimImpactoKick = agora + 220; // Impacto visual de 220ms
+    fimImpactoKick = agora + 220;
 
-    // Troca de cor cravada no compasso
+    // Troca de cor no bumbo
     indiceCor = (indiceCor + 1) % totalCores;
-    
-    // Troca de figura geométrica a cada 4 batidas reais (1 compasso 4/4 perfeito!)
-    contadorCompasso++;
-    if (contadorCompasso >= 4) {
-      indicePadraoGrande = (indicePadraoGrande + 1) % totalPadroesGrandes;
-      indicePadraoReativo = (indicePadraoReativo + 1) % totalPadroesReativos;
-      contadorCompasso = 0;
+
+    // Se a voz NÃO estiver ativa, conta batidas para avançar os padrões do bumbo
+    if (!vozAtiva && totalListaBumbo > 0) {
+      contadorBatidasBumbo++;
+      if (contadorBatidasBumbo >= calib.batidasPorTroca) {
+        indiceBumbo = (indiceBumbo + 1) % totalListaBumbo;
+        contadorBatidasBumbo = 0;
+      }
     }
   }
 
@@ -170,31 +217,34 @@ void atualizarLaserDMX_Audio(String modo, float nivel_graves, bool pico_grave, f
   dmxCanais[3] = 0;
 
   // -------------------------------------------------------------------------
-  // B. ANIMAÇÃO GRANDE vs REAÇÃO DE IMPACTO
+  // C. SELEÇÃO DE PADRÃO: LISTA VOCAL vs LISTA BUMBO
   // -------------------------------------------------------------------------
-  bool emImpacto = (agora < fimImpactoKick);
-
-  if (emImpacto) {
-    // Impacto do Kick: Flip horizontal rápido e rotação acelerada
-    dmxCanais[4] = (contadorCompasso == 0) ? padroesReativos[indicePadraoReativo] : padroesGrandes[indicePadraoGrande];
-    dmxCanais[7] = 235; // Rotação rápida no ataque
-    dmxCanais[8] = 180; // Flip horizontal que rebate o laser no kick
+  if (vozAtiva && totalListaVocal > 0) {
+    // VOZ CANTANDO: Assume o padrão da Lista de Vocal
+    dmxCanais[4] = listaVocal[indiceVocal];
+    dmxCanais[7] = 190; // Rotação viva
+    dmxCanais[8] = 64;
+    // Ondulação vocal líquida e expressiva
+    float vocal_curva = constrain(pow(vocalFiltrado, 0.70f), 0.0f, 1.0f);
+    dmxCanais[12] = (uint8_t)(vocal_curva * (float)calib.sensibilidadeVocal);
   } else {
-    // Fluxo Contínuo: Padrões grandes e rotação majestosa
-    dmxCanais[4] = padroesGrandes[indicePadraoGrande];
+    // SEM VOZ: Mantém os Padrões da Lista do Bumbo
+    if (totalListaBumbo > 0) {
+      dmxCanais[4] = listaBumbo[indiceBumbo];
+    }
     dmxCanais[7] = (uint8_t)calib.velocidadeRotacao;
-    dmxCanais[8] = 64;  // Normal
+    dmxCanais[8] = (kickReal) ? 180 : 64; // Flip rítmico no bumbo
+    dmxCanais[12] = 0;
   }
 
   // -------------------------------------------------------------------------
-  // C. ENVELOPE DE TAMANHO SUAVE E AMPLO (180 A 255)
+  // D. ZOOM / TAMANHO AMPLO (180 A 255)
   // -------------------------------------------------------------------------
   float zoomAlvo = (float)calib.zoomMinimo + (nivel_graves * ((float)calib.zoomMaximo - (float)calib.zoomMinimo));
-  if (kickReal || emImpacto) {
+  if (kickReal || (agora < fimImpactoKick)) {
     zoomAlvo = (float)calib.zoomMaximo;
   }
 
-  // Ataque instantâneo, decaimento rítmico musical
   if (zoomAlvo > zoomAtual) {
     zoomAtual = zoomAlvo;
   } else {
@@ -203,14 +253,7 @@ void atualizarLaserDMX_Audio(String modo, float nivel_graves, bool pico_grave, f
 
   dmxCanais[5] = (uint8_t)constrain(zoomAtual, (float)calib.zoomMinimo, 255.0f);
 
-  // -------------------------------------------------------------------------
-  // D. FILTRO SUAVE DE ONDULAÇÃO VOCAL (FLUIDO E ORGÂNICO)
-  // -------------------------------------------------------------------------
-  vocalFiltrado = (vocalFiltrado * 0.75f) + (nivel_vocal * 0.25f);
-  float vocal_curva = constrain(pow(vocalFiltrado, 0.70f), 0.0f, 1.0f);
-  dmxCanais[12] = (uint8_t)(vocal_curva * (float)calib.sensibilidadeVocal);
-
-  // Varredura panorâmica suave
+  // Varredura panorâmica suave no espaço
   dmxCanais[10] = (uint8_t)(64 + sin(tempo_s * 0.4f) * 18);
   dmxCanais[11] = 64;
   dmxCanais[9] = 64;
@@ -250,8 +293,6 @@ void desligarTudo() {
   setStrobe(0);
   setGloboRGB(0, 0, 0);
   setServoAngulo(90.0f);
-  dmxCanais[0] = 0;
-  enviarFrameDMX();
 }
 
 void atualizarServo(unsigned long agoraUs) {
@@ -305,7 +346,7 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Laser DMX Studio & Calibrator</title>
+<title>Laser DMX Studio Pro</title>
 <style>
   :root { --bg: #0b1329; --card: #17233f; --primary: #38bdf8; --accent: #f43f5e; --success: #10b981; --text: #f8fafc; }
   body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 12px; }
@@ -314,10 +355,11 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
   .subtitle { text-align: center; color: #94a3b8; font-size: 0.8rem; margin-bottom: 16px; }
   .card { background: var(--card); border-radius: 12px; padding: 14px; margin-bottom: 14px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.3); border: 1px solid #223254; }
   .card-title { font-weight: bold; color: var(--primary); font-size: 1.05rem; margin-bottom: 10px; border-bottom: 1px solid #2a3d66; padding-bottom: 6px; }
-  .btn-group { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
-  button { background: #24355a; color: white; border: none; padding: 10px 12px; border-radius: 8px; font-weight: bold; cursor: pointer; flex: 1; min-width: 110px; transition: all 0.2s; font-size: 0.85rem; }
+  .btn-group { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  button { background: #24355a; color: white; border: none; padding: 8px 12px; border-radius: 8px; font-weight: bold; cursor: pointer; flex: 1; min-width: 90px; transition: all 0.2s; font-size: 0.85rem; }
   button:hover { background: #324775; }
   button.active { background: var(--primary); color: #0b1329; }
+  button.selected { background: #0284c7; color: white; border: 1px solid #38bdf8; }
   button.success { background: var(--success); color: white; }
   button.danger { background: var(--accent); }
   .slider-row { margin-bottom: 10px; }
@@ -325,27 +367,58 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
   .slider-val { font-weight: bold; color: var(--primary); }
   input[type=range] { width: 100%; height: 8px; border-radius: 4px; background: #24355a; outline: none; -webkit-appearance: none; }
   input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%; background: var(--primary); cursor: pointer; }
-  textarea { width: 100%; height: 110px; background: #0b1329; border: 1px solid #2a3d66; border-radius: 8px; color: #a5f3fc; font-family: monospace; font-size: 0.8rem; padding: 8px; box-sizing: border-box; resize: none; }
+  input[type=text] { width: 100%; background: #0b1329; border: 1px solid #2a3d66; border-radius: 6px; color: #a5f3fc; font-family: monospace; font-size: 0.9rem; padding: 8px; box-sizing: border-box; margin-bottom: 8px; }
+  .tag-box { display: flex; gap: 5px; flex-wrap: wrap; margin-bottom: 8px; }
+  .tag-btn { background: #1e293b; border: 1px solid #334155; color: #94a3b8; font-size: 0.75rem; padding: 4px 8px; border-radius: 6px; cursor: pointer; }
+  .tag-btn.on { background: #0284c7; color: white; border-color: #38bdf8; }
   .toast { display: none; background: var(--success); color: white; text-align: center; padding: 8px; border-radius: 6px; font-weight: bold; margin-top: 8px; font-size: 0.85rem; }
 </style>
 </head>
 <body>
 <div class="container">
-  <h1>⚡ Laser DMX Studio</h1>
-  <div class="subtitle">Sincronismo Musical Calibrado (Anti-Glitch)</div>
+  <h1>⚡ Laser DMX Studio Pro</h1>
+  <div class="subtitle">Seletor de Listas: Rotação no Bumbo & Reação no Vocal</div>
 
   <div class="card">
     <div class="card-title">🎮 Modo de Operação</div>
     <div class="btn-group">
-      <button id="btnAuto" class="active" onclick="setModo(0)">🎵 Modo Automático (Áudio)</button>
-      <button id="btnManual" onclick="setModo(1)">🎛️ Modo Manual (Sliders)</button>
+      <button id="btnAuto" class="active" onclick="setModo(0)">🎵 Modo Automático</button>
+      <button id="btnManual" onclick="setModo(1)">🎛️ Modo Manual</button>
     </div>
   </div>
 
   <div class="card">
-    <div class="card-title">⚙️ Parâmetros de Ritmo & Tamanho</div>
+    <div class="card-title">🥁 1. Lista de Padrões do Bumbo (Rotação Musical)</div>
+    <div style="font-size: 0.8rem; color: #94a3b8; margin-bottom: 6px;">Clique nos padrões para ativar/desativar da rotação do bumbo:</div>
+    <div class="tag-box" id="tagsBumbo"></div>
+    <input type="text" id="inBumbo" placeholder="Ex: 70,90,110,130,40" onchange="salvarListas()">
+    
+    <div class="slider-row" style="margin-top: 10px;">
+      <div class="slider-header"><span>Trocar de Padrão a cada:</span><span class="slider-val" id="vBatidas">4 Batidas</span></div>
+      <div class="btn-group">
+        <button id="b2" onclick="setBatidas(2)">2 Batidas</button>
+        <button id="b4" class="selected" onclick="setBatidas(4)">4 Batidas (1 Compasso)</button>
+        <button id="b8" onclick="setBatidas(8)">8 Batidas (2 Compassos)</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">🎤 2. Lista de Padrões do Vocal / Glitch (Gatilho da Voz)</div>
+    <div style="font-size: 0.8rem; color: #94a3b8; margin-bottom: 6px;">Padrões que entram imediatamente quando o cantor canta:</div>
+    <div class="tag-box" id="tagsVocal"></div>
+    <input type="text" id="inVocal" placeholder="Ex: 25,85,120,160,190" onchange="salvarListas()">
+
+    <div class="slider-row" style="margin-top: 10px;">
+      <div class="slider-header"><span>Gatilho de Sensibilidade Vocal</span><span class="slider-val" id="vThresh">0.28</span></div>
+      <input type="range" min="10" max="80" value="28" oninput="updateThresh(this.value)">
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">⚙️ Calibração de Tamanho & Rotação</div>
     <div class="slider-row">
-      <div class="slider-header"><span>Tamanho Mínimo (Animação Grande)</span><span class="slider-val" id="vZoomMin">180</span></div>
+      <div class="slider-header"><span>Tamanho Mínimo (Base Ampla)</span><span class="slider-val" id="vZoomMin">180</span></div>
       <input type="range" min="100" max="240" value="180" oninput="updateCalib('zmin', this.value, 'vZoomMin')">
     </div>
     <div class="slider-row">
@@ -353,70 +426,96 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
       <input type="range" min="180" max="255" value="255" oninput="updateCalib('zmax', this.value, 'vZoomMax')">
     </div>
     <div class="slider-row">
-      <div class="slider-header"><span>Sensibilidade Vocal (Ondulação X)</span><span class="slider-val" id="vVocal">175</span></div>
+      <div class="slider-header"><span>Sensibilidade de Ondulação Vocal</span><span class="slider-val" id="vVocal">175</span></div>
       <input type="range" min="0" max="255" value="175" oninput="updateCalib('voc', this.value, 'vVocal')">
     </div>
-    <div class="slider-row">
-      <div class="slider-header"><span>Velocidade de Rotação 3D</span><span class="slider-val" id="vRot">170</span></div>
-      <input type="range" min="100" max="255" value="170" oninput="updateCalib('rot', this.value, 'vRot')">
-    </div>
   </div>
 
   <div class="card">
-    <div class="card-title">🎛️ Teste Rápido de Padrões & Sliders DMX</div>
+    <div class="card-title">💾 Salvar & Exportar</div>
     <div class="btn-group">
-      <button onclick="setAtalho(70)">🌀 Túnel Grande</button>
-      <button onclick="setAtalho(110)">📐 Plano 3D</button>
-      <button onclick="setAtalho(130)">✨ Espiral</button>
-      <button onclick="setAtalho(25)">⚡ Zigzag</button>
-      <button class="danger" onclick="setBlackout()">⬛ Blackout</button>
+      <button class="success" onclick="salvarFlash()">💾 Salvar na Memória do ESP32</button>
+      <button onclick="copiarConfigs()">📋 Copiar Configurações</button>
     </div>
-
-    <div class="slider-row">
-      <div class="slider-header"><span>CH1: Modo</span><span class="slider-val" id="vCH1">50</span></div>
-      <input type="range" min="0" max="255" value="50" oninput="setDMX(1, this.value, 'vCH1')">
-    </div>
-    <div class="slider-row">
-      <div class="slider-header"><span>CH3: Cor</span><span class="slider-val" id="vCH3">12</span></div>
-      <input type="range" min="0" max="255" value="12" oninput="setDMX(3, this.value, 'vCH3')">
-    </div>
-    <div class="slider-row">
-      <div class="slider-header"><span>CH5: Padrão / Gobo</span><span class="slider-val" id="vCH5">70</span></div>
-      <input type="range" min="0" max="255" value="70" oninput="setDMX(5, this.value, 'vCH5')">
-    </div>
-    <div class="slider-row">
-      <div class="slider-header"><span>CH6: Tamanho</span><span class="slider-val" id="vCH6">210</span></div>
-      <input type="range" min="0" max="255" value="210" oninput="setDMX(6, this.value, 'vCH6')">
-    </div>
-    <div class="slider-row">
-      <div class="slider-header"><span>CH8: Rotação</span><span class="slider-val" id="vCH8">170</span></div>
-      <input type="range" min="0" max="255" value="170" oninput="setDMX(8, this.value, 'vCH8')">
-    </div>
-    <div class="slider-row">
-      <div class="slider-header"><span>CH13: Onda X</span><span class="slider-val" id="vCH13">0</span></div>
-      <input type="range" min="0" max="255" value="0" oninput="setDMX(13, this.value, 'vCH13')">
-    </div>
-  </div>
-
-  <div class="card">
-    <div class="card-title">📋 Exportar / Salvar Configurações</div>
-    <textarea id="txtConfigs" readonly></textarea>
-    <div class="btn-group" style="margin-top: 8px;">
-      <button class="success" onclick="copiarConfigs()">📋 Copiar Configurações</button>
-      <button onclick="salvarFlash()">💾 Salvar na Memória do ESP32</button>
-    </div>
-    <div id="toastMsg" class="toast">✅ Configurações copiadas com sucesso!</div>
+    <div id="toastMsg" class="toast"></div>
   </div>
 </div>
 
 <script>
-let configObj = {
-  zmin: 180, zmax: 255, voc: 175, rot: 170,
-  dmx: { ch1: 50, ch3: 12, ch5: 70, ch6: 210, ch8: 170, ch13: 0 }
-};
+const todosPadroes = [
+  {val: 10, nome: "Círculo"},
+  {val: 25, nome: "Zigzag"},
+  {val: 40, nome: "Caixa 3D"},
+  {val: 55, nome: "Estrela"},
+  {val: 70, nome: "Túnel"},
+  {val: 85, nome: "Túnel Glitch"},
+  {val: 90, nome: "Onda"},
+  {val: 110, nome: "Plano 3D"},
+  {val: 120, nome: "Espiral Fragmentada"},
+  {val: 130, nome: "Cruz/Espiral"},
+  {val: 145, nome: "Polígono"},
+  {val: 160, nome: "Cortina Feixes"},
+  {val: 175, nome: "Estrela Multi"},
+  {val: 190, nome: "Flip Glitch"},
+  {val: 215, nome: "Vórtice Espacial"}
+];
 
-function renderJson() {
-  document.getElementById('txtConfigs').value = JSON.stringify(configObj, null, 2);
+let listaBumboArr = [70, 90, 110, 130, 40, 55];
+let listaVocalArr = [25, 85, 120, 160, 190, 215];
+
+function renderTags() {
+  document.getElementById('inBumbo').value = listaBumboArr.join(',');
+  document.getElementById('inVocal').value = listaVocalArr.join(',');
+
+  const boxB = document.getElementById('tagsBumbo');
+  boxB.innerHTML = '';
+  todosPadroes.forEach(p => {
+    const on = listaBumboArr.includes(p.val) ? 'on' : '';
+    boxB.innerHTML += `<div class="tag-btn ${on}" onclick="toggleTag('bumbo', ${p.val})">${p.val}:${p.nome}</div>`;
+  });
+
+  const boxV = document.getElementById('tagsVocal');
+  boxV.innerHTML = '';
+  todosPadroes.forEach(p => {
+    const on = listaVocalArr.includes(p.val) ? 'on' : '';
+    boxV.innerHTML += `<div class="tag-btn ${on}" onclick="toggleTag('vocal', ${p.val})">${p.val}:${p.nome}</div>`;
+  });
+}
+
+function toggleTag(tipo, val) {
+  let arr = (tipo === 'bumbo') ? listaBumboArr : listaVocalArr;
+  if (arr.includes(val)) {
+    arr = arr.filter(x => x !== val);
+  } else {
+    arr.push(val);
+  }
+  if (tipo === 'bumbo') listaBumboArr = arr; else listaVocalArr = arr;
+  renderTags();
+  salvarListas();
+}
+
+function salvarListas() {
+  const strB = document.getElementById('inBumbo').value;
+  const strV = document.getElementById('inVocal').value;
+  fetch('/setlistas?bumbo=' + encodeURIComponent(strB) + '&vocal=' + encodeURIComponent(strV));
+}
+
+function setBatidas(n) {
+  ['b2','b4','b8'].forEach(id => document.getElementById(id).className = '');
+  document.getElementById('b' + n).className = 'selected';
+  document.getElementById('vBatidas').innerText = n + ' Batidas';
+  fetch('/calib?bat=' + n);
+}
+
+function updateThresh(v) {
+  const real = (v / 100.0).toFixed(2);
+  document.getElementById('vThresh').innerText = real;
+  fetch('/calib?thr=' + real);
+}
+
+function updateCalib(param, val, labelId) {
+  document.getElementById(labelId).innerText = val;
+  fetch('/calib?' + param + '=' + val);
 }
 
 function setModo(m) {
@@ -425,56 +524,25 @@ function setModo(m) {
   document.getElementById('btnManual').className = (m === 1) ? 'active' : '';
 }
 
-function updateCalib(param, val, labelId) {
-  document.getElementById(labelId).innerText = val;
-  configObj[param] = parseInt(val);
-  renderJson();
-  fetch('/calib?' + param + '=' + val);
-}
-
-function setDMX(ch, val, labelId) {
-  document.getElementById(labelId).innerText = val;
-  configObj.dmx['ch' + ch] = parseInt(val);
-  renderJson();
-  fetch('/dmx?ch=' + ch + '&val=' + val);
-}
-
-function setAtalho(padrao) {
-  setModo(1);
-  document.getElementById('vCH5').innerText = padrao;
-  configObj.dmx.ch5 = padrao;
-  renderJson();
-  fetch('/dmx?ch=5&val=' + padrao);
-}
-
-function setBlackout() {
-  setModo(1);
-  document.getElementById('vCH1').innerText = 0;
-  configObj.dmx.ch1 = 0;
-  renderJson();
-  fetch('/dmx?ch=1&val=0');
-}
-
-function copiarConfigs() {
-  const el = document.getElementById('txtConfigs');
-  el.select();
-  navigator.clipboard.writeText(el.value);
+function showToast(msg) {
   const toast = document.getElementById('toastMsg');
   toast.style.display = 'block';
-  toast.innerText = '✅ Configurações copiadas para a Área de Transferência!';
+  toast.innerText = msg;
   setTimeout(() => { toast.style.display = 'none'; }, 2500);
 }
 
 function salvarFlash() {
-  fetch('/salvar').then(() => {
-    const toast = document.getElementById('toastMsg');
-    toast.style.display = 'block';
-    toast.innerText = '💾 Salvo com sucesso na memória Flash do ESP32!';
-    setTimeout(() => { toast.style.display = 'none'; }, 2500);
-  });
+  salvarListas();
+  fetch('/salvar').then(() => showToast('💾 Configurações e Listas salvas na Memória Flash!'));
 }
 
-window.onload = renderJson;
+function copiarConfigs() {
+  const obj = { bumbo: listaBumboArr, vocal: listaVocalArr };
+  navigator.clipboard.writeText(JSON.stringify(obj, null, 2));
+  showToast('📋 Listas copiadas para a Área de Transferência!');
+}
+
+window.onload = renderTags;
 </script>
 </body>
 </html>
@@ -501,24 +569,26 @@ void handleModo() {
   server.send(200, "text/plain", "OK");
 }
 
+void handleSetListas() {
+  if (server.hasArg("bumbo")) {
+    parseListaString(server.arg("bumbo"), listaBumbo, totalListaBumbo);
+    indiceBumbo = 0;
+  }
+  if (server.hasArg("vocal")) {
+    parseListaString(server.arg("vocal"), listaVocal, totalListaVocal);
+    indiceVocal = 0;
+  }
+  server.sendHeader("Connection", "close");
+  server.send(200, "text/plain", "OK");
+}
+
 void handleCalib() {
   if (server.hasArg("zmin")) calib.zoomMinimo = server.arg("zmin").toInt();
   if (server.hasArg("zmax")) calib.zoomMaximo = server.arg("zmax").toInt();
   if (server.hasArg("voc"))  calib.sensibilidadeVocal = server.arg("voc").toInt();
   if (server.hasArg("rot"))  calib.velocidadeRotacao = server.arg("rot").toInt();
-  server.sendHeader("Connection", "close");
-  server.send(200, "text/plain", "OK");
-}
-
-void handleDMX() {
-  if (server.hasArg("ch") && server.hasArg("val")) {
-    int ch = server.arg("ch").toInt();
-    int val = server.arg("val").toInt();
-    if (ch >= 1 && ch <= 16) {
-      dmxCanais[ch - 1] = constrain(val, 0, 255);
-      modoOperacaoWeb = 1;
-    }
-  }
+  if (server.hasArg("bat"))  calib.batidasPorTroca = server.arg("bat").toInt();
+  if (server.hasArg("thr"))  calib.thresholdVocal = server.arg("thr").toFloat();
   server.sendHeader("Connection", "close");
   server.send(200, "text/plain", "OK");
 }
@@ -529,6 +599,10 @@ void handleSalvar() {
   prefs.putInt("zmax", calib.zoomMaximo);
   prefs.putInt("voc", calib.sensibilidadeVocal);
   prefs.putInt("rot", calib.velocidadeRotacao);
+  prefs.putInt("bat", calib.batidasPorTroca);
+  prefs.putFloat("thr", calib.thresholdVocal);
+  prefs.putString("lstB", listaParaString(listaBumbo, totalListaBumbo));
+  prefs.putString("lstV", listaParaString(listaVocal, totalListaVocal));
   prefs.end();
   server.sendHeader("Connection", "close");
   server.send(200, "text/plain", "SALVO");
@@ -541,14 +615,23 @@ void setup() {
   Serial.begin(115200);
   delay(500);
   Serial.println("\n==================================================");
-  Serial.println(" Audio to Light - ESP32-C3 Studio v4.0 (Anti-Glitch)");
+  Serial.println(" Audio to Light - ESP32-C3 Studio Pro v5.0");
   Serial.println("==================================================");
 
+  // Carrega configurações e listas salvas na NVS Flash
   prefs.begin("laser_cfg", true);
   calib.zoomMinimo = prefs.getInt("zmin", 180);
   calib.zoomMaximo = prefs.getInt("zmax", 255);
   calib.sensibilidadeVocal = prefs.getInt("voc", 175);
   calib.velocidadeRotacao = prefs.getInt("rot", 170);
+  calib.batidasPorTroca = prefs.getInt("bat", 4);
+  calib.thresholdVocal = prefs.getFloat("thr", 0.28f);
+
+  String strB = prefs.getString("lstB", "70,90,110,130,40,55");
+  parseListaString(strB, listaBumbo, totalListaBumbo);
+
+  String strV = prefs.getString("lstV", "25,85,120,160,190,215");
+  parseListaString(strV, listaVocal, totalListaVocal);
   prefs.end();
 
   pinMode(PIN_STROBE_BRANCO, OUTPUT);
@@ -580,14 +663,14 @@ void setup() {
   digitalWrite(PIN_LED_ONBOARD, LOW);
   Serial.printf("\n[Wi-Fi] Conectado! IP do ESP32: %s\n", WiFi.localIP().toString().c_str());
 
-  // INICIALIZA DMX APÓS WI-FI
+  // INICIALIZA DMX APÓS WI-FI (COM FEIXE SEMPRE ATIVO)
   inicializarDMX();
 
   // ROTAS WEB
   server.on("/", handleRoot);
   server.on("/modo", handleModo);
   server.on("/calib", handleCalib);
-  server.on("/dmx", handleDMX);
+  server.on("/setlistas", handleSetListas);
   server.on("/salvar", handleSalvar);
   server.begin();
   Serial.printf("[WEB] Painel de Controle ativo em: http://%s\n", WiFi.localIP().toString().c_str());
@@ -671,13 +754,12 @@ void loop() {
           float nivel_med = medios["nivel"] | 0.0f;
           float nivel_med_grav = medios_graves["nivel"] | 0.0f;
           float nivel_agud = agudos["nivel"] | 0.0f;
-          bool ativo_agudo = agudos["ativo"] | false;
 
           float nivel_vocal = (nivel_med * 0.70f) + (nivel_med_grav * 0.20f) + (nivel_agud * 0.10f);
           if (nivel_vocal < 0.05f) nivel_vocal = nivel_med;
           nivel_vocal = constrain(nivel_vocal, 0.0f, 1.0f);
 
-          // 1. ATUALIZA LASER DMX (Sincronismo Musical 4/4 Calibrado)
+          // 1. ATUALIZA LASER DMX (Com Listas Customizadas de Bumbo e Vocal)
           if (modoOperacaoWeb == 0) {
             atualizarLaserDMX_Audio(modo_atual, nivel_grave, pico_grave, nivel_vocal, tempo_s, deltaTempo, agora);
           }
@@ -698,7 +780,7 @@ void loop() {
             setServoVarredura(0.2f, 50.0f, 130.0f, tempo_s);
           } 
           else if (modo_atual == "standby") {
-            if (ativo_grave || pico_grave || ativo_agudo) {
+            if (ativo_grave || pico_grave) {
               setServoVarredura(0.4f, 45.0f, 135.0f, tempo_s);
             } else {
               setServoAngulo(90.0f);
@@ -728,10 +810,6 @@ void loop() {
 
   if (agora >= fimPulsoStrobe) {
     setStrobe(0);
-  }
-
-  if (agora - ultimoPacoteAudio > 4000 && ultimoPacoteAudio > 0 && modoOperacaoWeb == 0) {
-    desligarTudo();
   }
 
   delay(1);

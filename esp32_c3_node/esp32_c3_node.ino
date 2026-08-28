@@ -1,23 +1,26 @@
 /*
  * ==============================================================================
- * PROJETO: Audio to Light - NÓ RECEPTOR ESP32-C3 SUPER MINI (COM DMX512)
- * VERSÃO: 3.4 (Laser Rítmico com Tamanho Mínimo Amplo e Aberto)
+ * PROJETO: Audio to Light - NÓ RECEPTOR ESP32-C3 SUPER MINI (COM DMX512 + WEB SERVER)
+ * DESCRIÇÃO: Inclui Web Server HTTP na porta 80 para calibração e teste em tempo real
+ *            de todos os 16 canais DMX e parâmetros de áudio pelo navegador!
  * ==============================================================================
  */
 
 #include <WiFi.h>
 #include <WiFiUdp.h>
+#include <WebServer.h>
 #include <ArduinoJson.h>
 #include <math.h>
 
 // ------------------------------------------------------------------------------
-// 1. CONFIGURAÇÃO WI-FI & UDP
+// 1. CONFIGURAÇÃO WI-FI, UDP & WEB SERVER
 // ------------------------------------------------------------------------------
 const char* WIFI_SSID = "SEU_WIFI_NOME";        // << Coloque o nome do seu Wi-Fi
 const char* WIFI_PASS = "SUA_WIFI_SENHA";       // << Coloque a senha do seu Wi-Fi
 const unsigned int UDP_PORT = 5005;
 
 WiFiUDP udp;
+WebServer server(80);
 char packetBuffer[2048];
 
 // ------------------------------------------------------------------------------
@@ -36,23 +39,35 @@ char packetBuffer[2048];
 #define PIN_LED_ONBOARD      8   // LED de status onboard
 
 // ------------------------------------------------------------------------------
-// 3. BUFFER E ESTRUTURA DMX512 (16 Canais do Projetor Laser)
+// 3. BUFFER DMX512 & PARÂMETROS DE CALIBRAÇÃO EM TEMPO REAL
 // ------------------------------------------------------------------------------
 uint8_t dmxCanais[16];
 unsigned long ultimoEnvioDmx = 0;
 
-// Lista de Padrões Geométricos Nítidos e Expressivos
+// Modo de Operação: 0 = Modo Áudio Automático (UDP), 1 = Modo Manual Web (Sliders)
+int modoOperacaoWeb = 0;
+
+// Parâmetros ajustáveis via Web em tempo real para o Modo Automático
+struct ParametrosCalibracao {
+  int zoomMinimo = 135;       // Tamanho de repouso (0-255)
+  int zoomMaximo = 255;       // Tamanho no pico da batida (0-255)
+  int sensibilidadeVocal = 180;// Intensidade de onda na voz (0-255)
+  int velocidadeRotacao = 200; // Velocidade de rotação (0-255)
+  int corManual = 12;         // Cor fixa no modo manual (0-255)
+  int padraoManual = 25;      // Padrão no modo manual (0-255)
+} calib;
+
+// Lista de Padrões Geométricos e Cores
 const uint8_t padroesLaser[] = {12, 25, 40, 55, 70, 90, 110, 130};
 const int totalPadroes = sizeof(padroesLaser) / sizeof(padroesLaser[0]);
 int indicePadrao = 0;
 
-// Cores Sólidas de Alto Contraste (Vermelho, Verde, Azul, Amarelo, Ciano, Magenta, Branco)
 const uint8_t coresLaser[] = {12, 22, 32, 42, 52, 62, 72};
 const int totalCores = sizeof(coresLaser) / sizeof(coresLaser[0]);
 int indiceCor = 0;
 
 int contadorBatidas = 0;
-float zoomAtual = 135.0f; // Tamanho base amplo e aberto (nunca fica pequeno)
+float zoomAtual = 135.0f;
 
 // ------------------------------------------------------------------------------
 // 4. VARIÁVEIS DE ESTADO E TEMPORIZAÇÃO
@@ -93,35 +108,25 @@ void enviarFrameDMX() {
   Serial1.write(dmxCanais, 16);
 }
 
-void atualizarLaserDMX(String modo, float nivel_graves, bool pico_grave, float nivel_vocal, float deltaTempo) {
+void atualizarLaserDMX_Audio(String modo, float nivel_graves, bool pico_grave, float nivel_vocal, float deltaTempo) {
   if (modo == "standby") {
-    dmxCanais[0] = 0;   // CH1: Modo fechado (Blackout)
+    dmxCanais[0] = 0;
     dmxCanais[1] = 0;
     dmxCanais[2] = 0;
     dmxCanais[4] = 0;
     return;
   }
 
-  // CH1: Modo Manual do Console (Controle DMX total)
-  dmxCanais[0] = 50;
-
-  // CH2: Velocidade padrão
+  dmxCanais[0] = 50;  // Manual Console
   dmxCanais[1] = 128;
-
-  // CH14 e CH16: Sem corte ou desenho gradual (feixe sólido)
   dmxCanais[13] = 0;
   dmxCanais[14] = 255;
   dmxCanais[15] = 0;
   dmxCanais[6] = 0;
 
-  // -------------------------------------------------------------------------
-  // A. TROCA DE COR E PADRÃO NO RITMO DO KICK / GRAVE
-  // -------------------------------------------------------------------------
+  // Troca de cor e padrão no kick
   if (pico_grave) {
-    // A cada batida forte, troca a cor instantaneamente
     indiceCor = (indiceCor + 1) % totalCores;
-    
-    // A cada 4 batidas, troca o desenho
     contadorBatidas++;
     if (contadorBatidas >= 4) {
       indicePadrao = (indicePadrao + 1) % totalPadroes;
@@ -129,59 +134,34 @@ void atualizarLaserDMX(String modo, float nivel_graves, bool pico_grave, float n
     }
   }
 
-  // CH3: Cor atual sólida de alto impacto
   dmxCanais[2] = coresLaser[indiceCor];
   dmxCanais[3] = 0;
-
-  // CH5: Padrão geométrico atual
   dmxCanais[4] = padroesLaser[indicePadrao];
 
-  // -------------------------------------------------------------------------
-  // B. PULSAÇÃO DE TAMANHO / ZOOM (BASE AMPLA: 135 A 255)
-  // -------------------------------------------------------------------------
-  // Tamanho base amplo em repouso (~135), explode para 250+ nas batidas e vocal
-  float zoomAlvo = 135.0f + (nivel_graves * 85.0f) + (nivel_vocal * 35.0f);
+  // Zoom dinâmico parametrizado
+  float amplitudeZoom = (float)(calib.zoomMaximo - calib.zoomMinimo);
+  float zoomAlvo = (float)calib.zoomMinimo + (nivel_graves * (amplitudeZoom * 0.7f)) + (nivel_vocal * (amplitudeZoom * 0.3f));
   if (pico_grave) {
-    zoomAlvo = 255.0f; // Explosão máxima no bumbo
+    zoomAlvo = (float)calib.zoomMaximo;
   }
 
-  // Envelope Follower: Sobe instantaneamente, decai suavemente até o tamanho base de 135
   if (zoomAlvo > zoomAtual) {
-    zoomAtual = zoomAlvo; // Ataque rápido
+    zoomAtual = zoomAlvo;
   } else {
-    zoomAtual = max(135.0f, zoomAtual - (140.0f * deltaTempo)); // Decaimento suave até 135
+    zoomAtual = max((float)calib.zoomMinimo, zoomAtual - (150.0f * deltaTempo));
   }
 
-  dmxCanais[5] = (uint8_t)constrain(zoomAtual, 130.0f, 255.0f); // CH6: Tamanho amplo
+  dmxCanais[5] = (uint8_t)constrain(zoomAtual, (float)calib.zoomMinimo, 255.0f);
 
-  // -------------------------------------------------------------------------
-  // C. ONDULAÇÃO NO VOCAL & ROTAÇÃO RÍTMICA
-  // -------------------------------------------------------------------------
-  // CH13: Ondulação no canto/voz
+  // Ondulação Vocal parametrizada
   float vocal_curva = constrain(pow(nivel_vocal, 0.70f), 0.0f, 1.0f);
-  dmxCanais[12] = (uint8_t)(vocal_curva * 180.0f);
+  dmxCanais[12] = (uint8_t)(vocal_curva * (float)calib.sensibilidadeVocal);
 
-  if (modo == "alta_energia") {
-    dmxCanais[7] = 220; // CH8: Rotação rápida
-    dmxCanais[8] = (pico_grave) ? 160 : 64; // CH9: Flip horizontal nos kicks
-    dmxCanais[9] = 64;
-    dmxCanais[10] = 64;
-    dmxCanais[11] = 64;
-  }
-  else if (modo == "suave") {
-    dmxCanais[7] = 135; // Rotação lenta
-    dmxCanais[8] = 64;
-    dmxCanais[9] = 64;
-    dmxCanais[10] = 64;
-    dmxCanais[11] = 64;
-  }
-  else { // media_energia / fallback
-    dmxCanais[7] = 165; // Rotação moderada
-    dmxCanais[8] = 64;
-    dmxCanais[9] = 64;
-    dmxCanais[10] = 64;
-    dmxCanais[11] = 64;
-  }
+  dmxCanais[7] = (uint8_t)calib.velocidadeRotacao;
+  dmxCanais[8] = (pico_grave) ? 160 : 64;
+  dmxCanais[9] = 64;
+  dmxCanais[10] = 64;
+  dmxCanais[11] = 64;
 }
 
 // ------------------------------------------------------------------------------
@@ -254,7 +234,7 @@ void atualizarPaletaGlobo(String modo, float nivel_vocal, float tempo_s) {
   else if (modo == "standby") {
     setGloboRGB(0, 0, 0);
   } 
-  else { // media_energia / fallback
+  else {
     float onda = (sin(tempo_s * 1.5f) + 1.0f) / 2.0f;
     float r = onda * 80.0f * (brilho_base / 100.0f);
     float g = (1.0f - onda) * 50.0f * (brilho_base / 100.0f);
@@ -264,13 +244,187 @@ void atualizarPaletaGlobo(String modo, float nivel_vocal, float tempo_s) {
 }
 
 // ------------------------------------------------------------------------------
-// 7. SETUP
+// 7. PÁGINA WEB HTML / CSS / JS EMBUTIDA
+// ------------------------------------------------------------------------------
+
+const char HTML_INDEX[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Laser DMX Controller & Calibrator</title>
+<style>
+  :root { --bg: #0f172a; --card: #1e293b; --primary: #38bdf8; --accent: #f43f5e; --text: #f8fafc; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 15px; }
+  .container { max-width: 650px; margin: 0 auto; }
+  h1 { text-align: center; color: var(--primary); font-size: 1.5rem; margin-bottom: 5px; }
+  .subtitle { text-align: center; color: #94a3b8; font-size: 0.85rem; margin-bottom: 20px; }
+  .card { background: var(--card); border-radius: 12px; padding: 16px; margin-bottom: 16px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.3); }
+  .card-title { font-weight: bold; color: var(--primary); font-size: 1.1rem; margin-bottom: 12px; border-bottom: 1px solid #334155; padding-bottom: 6px; }
+  .btn-group { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  button { background: #334155; color: white; border: none; padding: 10px 14px; border-radius: 8px; font-weight: bold; cursor: pointer; flex: 1; min-width: 120px; transition: all 0.2s; }
+  button:hover { background: #475569; }
+  button.active { background: var(--primary); color: #0f172a; }
+  button.danger { background: var(--accent); }
+  .slider-row { margin-bottom: 12px; }
+  .slider-header { display: flex; justify-content: space-between; font-size: 0.9rem; margin-bottom: 4px; }
+  .slider-val { font-weight: bold; color: var(--primary); }
+  input[type=range] { width: 100%; height: 8px; border-radius: 4px; background: #334155; outline: none; -webkit-appearance: none; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 20px; height: 20px; border-radius: 50%; background: var(--primary); cursor: pointer; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>⚡ Laser DMX Calibrator</h1>
+  <div class="subtitle">ESP32-C3 Super Mini | Controle em Tempo Real</div>
+
+  <div class="card">
+    <div class="card-title">🎮 Modo de Operação</div>
+    <div class="btn-group">
+      <button id="btnAuto" class="active" onclick="setModo(0)">🎵 Modo Áudio Automático</button>
+      <button id="btnManual" onclick="setModo(1)">🎛️ Modo Manual (Sliders)</button>
+    </div>
+  </div>
+
+  <div class="card" id="cardAuto">
+    <div class="card-title">⚙️ Calibração de Parâmetros do Ritmo</div>
+    <div class="slider-row">
+      <div class="slider-header"><span>Tamanho Mínimo (Repouso)</span><span class="slider-val" id="vZoomMin">135</span></div>
+      <input type="range" min="50" max="200" value="135" oninput="updateCalib('zmin', this.value, 'vZoomMin')">
+    </div>
+    <div class="slider-row">
+      <div class="slider-header"><span>Tamanho Máximo (Pico do Bumbo)</span><span class="slider-val" id="vZoomMax">255</span></div>
+      <input type="range" min="150" max="255" value="255" oninput="updateCalib('zmax', this.value, 'vZoomMax')">
+    </div>
+    <div class="slider-row">
+      <div class="slider-header"><span>Sensibilidade Vocal (Ondulação X)</span><span class="slider-val" id="vVocal">180</span></div>
+      <input type="range" min="0" max="255" value="180" oninput="updateCalib('voc', this.value, 'vVocal')">
+    </div>
+    <div class="slider-row">
+      <div class="slider-header"><span>Velocidade de Rotação 3D</span><span class="slider-val" id="vRot">200</span></div>
+      <input type="range" min="100" max="255" value="200" oninput="updateCalib('rot', this.value, 'vRot')">
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">🎛️ Sliders Diretos DMX512 (Canais do Projetor)</div>
+    
+    <div class="btn-group">
+      <button onclick="setAtalho(10)">⭕ Círculo</button>
+      <button onclick="setAtalho(25)">⚡ Zigzag</button>
+      <button onclick="setAtalho(70)">🌀 Túnel</button>
+      <button onclick="setAtalho(90)">🌊 Onda</button>
+      <button class="danger" onclick="setBlackout()">⬛ Blackout</button>
+    </div>
+
+    <div class="slider-row">
+      <div class="slider-header"><span>CH1: Modo (0=Off, 50=Manual)</span><span class="slider-val" id="vCH1">50</span></div>
+      <input type="range" min="0" max="255" value="50" oninput="setDMX(1, this.value, 'vCH1')">
+    </div>
+    <div class="slider-row">
+      <div class="slider-header"><span>CH3: Cor (12=Vm, 22=Vd, 32=Az, 52=Ciano)</span><span class="slider-val" id="vCH3">12</span></div>
+      <input type="range" min="0" max="255" value="12" oninput="setDMX(3, this.value, 'vCH3')">
+    </div>
+    <div class="slider-row">
+      <div class="slider-header"><span>CH5: Padrão Gráfico / Gobo</span><span class="slider-val" id="vCH5">25</span></div>
+      <input type="range" min="0" max="255" value="25" oninput="setDMX(5, this.value, 'vCH5')">
+    </div>
+    <div class="slider-row">
+      <div class="slider-header"><span>CH6: Tamanho / Zoom Manual</span><span class="slider-val" id="vCH6">160</span></div>
+      <input type="range" min="0" max="255" value="160" oninput="setDMX(6, this.value, 'vCH6')">
+    </div>
+    <div class="slider-row">
+      <div class="slider-header"><span>CH8: Rotação Centro (128-255)</span><span class="slider-val" id="vCH8">180</span></div>
+      <input type="range" min="0" max="255" value="180" oninput="setDMX(8, this.value, 'vCH8')">
+    </div>
+    <div class="slider-row">
+      <div class="slider-header"><span>CH13: Onda no Eixo X</span><span class="slider-val" id="vCH13">0</span></div>
+      <input type="range" min="0" max="255" value="0" oninput="setDMX(13, this.value, 'vCH13')">
+    </div>
+  </div>
+</div>
+
+<script>
+function setModo(m) {
+  fetch('/modo?val=' + m);
+  document.getElementById('btnAuto').className = (m === 0) ? 'active' : '';
+  document.getElementById('btnManual').className = (m === 1) ? 'active' : '';
+}
+
+function updateCalib(param, val, labelId) {
+  document.getElementById(labelId).innerText = val;
+  fetch('/calib?' + param + '=' + val);
+}
+
+function setDMX(ch, val, labelId) {
+  document.getElementById(labelId).innerText = val;
+  fetch('/dmx?ch=' + ch + '&val=' + val);
+}
+
+function setAtalho(padrao) {
+  setModo(1);
+  document.getElementById('vCH5').innerText = padrao;
+  fetch('/dmx?ch=5&val=' + padrao);
+}
+
+function setBlackout() {
+  setModo(1);
+  document.getElementById('vCH1').innerText = 0;
+  fetch('/dmx?ch=1&val=0');
+}
+</script>
+</body>
+</html>
+)rawliteral";
+
+// ------------------------------------------------------------------------------
+// 8. ROTAS DO WEB SERVER
+// ------------------------------------------------------------------------------
+
+void handleRoot() {
+  server.send(200, "text/html", HTML_INDEX);
+}
+
+void handleModo() {
+  if (server.hasArg("val")) {
+    modoOperacaoWeb = server.arg("val").toInt();
+    if (modoOperacaoWeb == 1) {
+      dmxCanais[0] = 50; // Habilita modo manual no laser
+      dmxCanais[14] = 255;
+    }
+  }
+  server.send(200, "text/plain", "OK");
+}
+
+void handleCalib() {
+  if (server.hasArg("zmin")) calib.zoomMinimo = server.arg("zmin").toInt();
+  if (server.hasArg("zmax")) calib.zoomMaximo = server.arg("zmax").toInt();
+  if (server.hasArg("voc"))  calib.sensibilidadeVocal = server.arg("voc").toInt();
+  if (server.hasArg("rot"))  calib.velocidadeRotacao = server.arg("rot").toInt();
+  server.send(200, "text/plain", "OK");
+}
+
+void handleDMX() {
+  if (server.hasArg("ch") && server.hasArg("val")) {
+    int ch = server.arg("ch").toInt();
+    int val = server.arg("val").toInt();
+    if (ch >= 1 && ch <= 16) {
+      dmxCanais[ch - 1] = constrain(val, 0, 255);
+      modoOperacaoWeb = 1; // Ativa modo manual web
+    }
+  }
+  server.send(200, "text/plain", "OK");
+}
+
+// ------------------------------------------------------------------------------
+// 9. SETUP
 // ------------------------------------------------------------------------------
 void setup() {
   Serial.begin(115200);
   delay(1000);
   Serial.println("\n==================================================");
-  Serial.println(" Audio to Light - ESP32-C3 (Laser Aberto & Ritmico)");
+  Serial.println(" Audio to Light - ESP32-C3 (Laser DMX + Web Server)");
   Serial.println("==================================================");
 
   pinMode(PIN_STROBE_BRANCO, OUTPUT);
@@ -309,14 +463,25 @@ void setup() {
   }
 
   digitalWrite(PIN_LED_ONBOARD, LOW);
-  Serial.printf("\n[Wi-Fi] Conectado! IP do ESP32: %s\n", WiFi.localIP().toString().c_str());
+  Serial.printf("\n==================================================");
+  Serial.printf("\n [SUCESSO] Web Server Ativo no Navegador!");
+  Serial.printf("\n Abra no seu PC ou celular: http://%s", WiFi.localIP().toString().c_str());
+  Serial.printf("\n==================================================\n");
 
+  // Inicia Rotas Web
+  server.on("/", handleRoot);
+  server.on("/modo", handleModo);
+  server.on("/calib", handleCalib);
+  server.on("/dmx", handleDMX);
+  server.begin();
+
+  // Inicia Socket UDP
   udp.begin(UDP_PORT);
   Serial.printf("[UDP] Escutando porta %d...\n", UDP_PORT);
 }
 
 // ------------------------------------------------------------------------------
-// 8. LOOP PRINCIPAL
+// 10. LOOP PRINCIPAL
 // ------------------------------------------------------------------------------
 unsigned long ultimoCicloMs = 0;
 
@@ -326,6 +491,9 @@ void loop() {
   float tempo_s = agora / 1000.0f;
   float deltaTempo = max(0.001f, (agora - ultimoCicloMs) / 1000.0f);
   ultimoCicloMs = agora;
+
+  // Processa requisições Web do navegador
+  server.handleClient();
 
   atualizarServo(agoraUs);
 
@@ -393,8 +561,10 @@ void loop() {
           if (nivel_vocal < 0.05f) nivel_vocal = nivel_med;
           nivel_vocal = constrain(nivel_vocal, 0.0f, 1.0f);
 
-          // 1. ATUALIZA LASER DMX COM TAMANHO AMPLO E PULSAÇÃO NO BEAT
-          atualizarLaserDMX(modo_atual, nivel_grave, pico_grave, nivel_vocal, deltaTempo);
+          // 1. ATUALIZA LASER DMX (Se estiver no Modo Automático Áudio)
+          if (modoOperacaoWeb == 0) {
+            atualizarLaserDMX_Audio(modo_atual, nivel_grave, pico_grave, nivel_vocal, deltaTempo);
+          }
 
           // 2. GLOBO RGB
           atualizarPaletaGlobo(modo_atual, nivel_vocal, tempo_s);
@@ -418,7 +588,7 @@ void loop() {
               setServoAngulo(90.0f);
             }
           } 
-          else { // media_energia / fallback
+          else {
             setServoVarredura(0.5f, 30.0f, 150.0f, tempo_s);
           }
 
@@ -444,7 +614,7 @@ void loop() {
     setStrobe(0);
   }
 
-  if (agora - ultimoPacoteAudio > 4000 && ultimoPacoteAudio > 0) {
+  if (agora - ultimoPacoteAudio > 4000 && ultimoPacoteAudio > 0 && modoOperacaoWeb == 0) {
     desligarTudo();
   }
 }

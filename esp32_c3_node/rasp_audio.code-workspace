@@ -1,0 +1,16 @@
+{
+	"folders": [
+		{
+			"path": ".."
+		},
+		{
+			"name": "audio",
+			"path": "../../../PlatformIO/Projects/audio"
+		},
+		{
+			"name": "esp32_c3_node",
+			"path": "."
+		}
+	],
+	"settings": {}
+}

@@ -1,11 +1,12 @@
 /*
  * ==============================================================================
  * PROJETO: Audio to Light - NÓ DE ILUMINAÇÃO & MOVIMENTO (ESP32-C3 SUPER MINI)
+ * VERSÃO: 2.0 (Correção GPIO Strobe com Nível Lógico Digital + Seletor de Pino)
  * ATUADORES:
- *   - Strobe Branco 12V (GPIO 0 via ULN2003) com contagem e delay de piscadas
- *   - Globo RGB (GPIO 4, 5, 6 via ULN2003) com paletas e sensibilidade
- *   - Servo Motor SG90 (GPIO 7) com varredura angular e Drop Jumps
- *   - Servidor Web HTTP (Porta 80) para calibração de sensibilidades e testes
+ *   - Strobe Branco 12V (Pino configurável: GPIO 0, 1, 3 ou 10 via ULN2003)
+ *   - Globo RGB (GPIO 4, 5, 6 via ULN2003)
+ *   - Servo Motor SG90 (GPIO 7)
+ *   - Servidor Web HTTP (Porta 80)
  * ==============================================================================
  */
 
@@ -31,7 +32,8 @@ char packetBuffer[2048];
 // ------------------------------------------------------------------------------
 // 2. PINAGEM GPIO (ESP32-C3 Super Mini)
 // ------------------------------------------------------------------------------
-#define PIN_STROBE_BRANCO    0   // ULN2003 - Strobe nos Graves
+int pinoStrobeAtual = 0; // Padrão GPIO 0 (pode ser alterado para 1, 3, 10 na Web)
+
 #define PIN_GLOBO_R          4   // ULN2003 - Globo Vermelho
 #define PIN_GLOBO_G          5   // ULN2003 - Globo Verde
 #define PIN_GLOBO_B          6   // ULN2003 - Globo Azul
@@ -41,14 +43,15 @@ char packetBuffer[2048];
 // ------------------------------------------------------------------------------
 // 3. PARÂMETROS DE CALIBRAÇÃO & CONTROLE DOS ATUADORES
 // ------------------------------------------------------------------------------
-bool sistemaLigado = true; // Master Power Switch\nint modoOperacao = 0; // 0 = Áudio Automático, 1 = Manual / Teste
+bool sistemaLigado = true; // Master Power Switch
+int modoOperacao = 0;      // 0 = Áudio Automático, 1 = Manual / Teste
 
 struct ConfigLuzes {
   // STROBE
   float threshGrave = 0.40f;    // Limiar para disparar o strobe (0.10 a 0.90)
   int duracaoTotalMs = 400;     // Duração total do disparo do strobe (100 a 1000ms)
   int quantidadeFlashes = 4;    // Número de piscadas durante o disparo (1 a 10 flashes)
-  int intensidadeStrobe = 255;  // Brilho do Strobe (0 a 255)
+  int intensidadeStrobe = 255;  // Brilho do Strobe (0 ou 255 digital)
 
   // GLOBO RGB
   int brilhoGloboPct = 100;     // Brilho máximo do globo (0 a 100%)
@@ -61,10 +64,10 @@ struct ConfigLuzes {
   bool jumpNoKick = true;       // Se dá salto brusco no bumbo
 } cfg;
 
-// Estados e Temporização do Strobe Estroboscópico (Multi-Flash)
+// Estados do Strobe
 bool strobeEmDisparo = false;
+bool strobeFixoOn = false;
 unsigned long inicioDisparoStrobe = 0;
-int flashAtual = 0;
 
 // Variáveis do Servo SG90
 unsigned long ultimoPulsoServo = 0;
@@ -92,8 +95,17 @@ struct ContextoSpotify {
 // 4. FUNÇÕES DE CONTROLE DE HARDWARE
 // ------------------------------------------------------------------------------
 
-void setStrobe(int valor_0_a_255) {
-  analogWrite(PIN_STROBE_BRANCO, constrain(valor_0_a_255, 0, 255));
+void aplicarPinoStrobe(int novoPino) {
+  // Desliga o pino antigo
+  digitalWrite(pinoStrobeAtual, LOW);
+  pinoStrobeAtual = novoPino;
+  pinMode(pinoStrobeAtual, OUTPUT);
+  digitalWrite(pinoStrobeAtual, LOW);
+}
+
+void setStrobe(bool ligado) {
+  // Nível Lógico Digital Saturado para o ULN2003 (3.3V HIGH / 0V LOW)
+  digitalWrite(pinoStrobeAtual, ligado ? HIGH : LOW);
 }
 
 void setGloboRGB(float r_pct, float g_pct, float b_pct) {
@@ -128,16 +140,20 @@ void atualizarServo(unsigned long agoraUs) {
   }
 }
 
-// Dispara a sequência estroboscópica de piscadas
 void dispararStrobe() {
+  strobeFixoOn = false;
   strobeEmDisparo = true;
   inicioDisparoStrobe = millis();
 }
 
-// Motor de piscadas do Strobe (Calcula ciclos ON / OFF com base na quantidade escolhida)
 void processarStrobe(unsigned long agora) {
+  if (strobeFixoOn) {
+    setStrobe(true);
+    return;
+  }
+
   if (!strobeEmDisparo) {
-    setStrobe(0);
+    setStrobe(false);
     return;
   }
 
@@ -145,25 +161,25 @@ void processarStrobe(unsigned long agora) {
 
   if (decorrido >= cfg.duracaoTotalMs) {
     strobeEmDisparo = false;
-    setStrobe(0);
+    setStrobe(false);
     return;
   }
 
-  // Divide o tempo total pelo número de piscadas
   int periodoFlash = cfg.duracaoTotalMs / max(1, cfg.quantidadeFlashes);
   int tempoOn = periodoFlash / 2; // Metade aceso, metade apagado
 
   int fase = decorrido % periodoFlash;
   if (fase < tempoOn) {
-    setStrobe(cfg.intensidadeStrobe);
+    setStrobe(true);
   } else {
-    setStrobe(0);
+    setStrobe(false);
   }
 }
 
 void desligarTudo() {
   strobeEmDisparo = false;
-  setStrobe(0);
+  strobeFixoOn = false;
+  setStrobe(false);
   setGloboRGB(0, 0, 0);
   setServoAngulo(90.0f);
 }
@@ -191,7 +207,7 @@ void atualizarPaletaGlobo(String modo, float nivel_vocal, float tempo_s) {
   else if (modo == "standby") {
     setGloboRGB(0, 0, 0);
   } 
-  else { // media_energia / fallback
+  else {
     float onda = (sin(tempo_s * 1.5f) + 1.0f) / 2.0f;
     float r = onda * 80.0f * (brilho_base / 100.0f);
     float g = (1.0f - onda) * 50.0f * (brilho_base / 100.0f);
@@ -225,6 +241,7 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
   button.active { background: var(--primary); color: #0b1329; }
   button.selected { background: #0284c7; color: white; border: 1px solid #38bdf8; }
   button.success { background: var(--success); color: white; }
+  button.warning { background: var(--warning); color: #0b1329; }
   button.danger { background: var(--accent); }
   .slider-row { margin-bottom: 10px; }
   .slider-header { display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 4px; }
@@ -253,10 +270,18 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
     </div>
   </div>
 
-  <!-- SEÇÃO 1: STROBE BRANCO (PISCADAS E DELAY) -->
+  <!-- SEÇÃO 1: STROBE BRANCO -->
   <div class="card" style="border-left: 4px solid #f8fafc;">
     <div class="card-title">⚪ 1. Strobe Branco (Graves / Kicks)</div>
     
+    <div style="font-size: 0.85rem; color: #94a3b8; margin-bottom: 6px;">Pino GPIO de Saída do Strobe:</div>
+    <div class="btn-group" style="margin-bottom: 12px;">
+      <button id="pin0" class="selected" onclick="setPinoStrobe(0)">GPIO 0 (Padrão)</button>
+      <button id="pin1" onclick="setPinoStrobe(1)">GPIO 1</button>
+      <button id="pin3" onclick="setPinoStrobe(3)">GPIO 3</button>
+      <button id="pin10" onclick="setPinoStrobe(10)">GPIO 10</button>
+    </div>
+
     <div class="slider-row">
       <div class="slider-header"><span>Duração Total do Disparo (Delay)</span><span class="slider-val" id="vDelay">400 ms</span></div>
       <input type="range" min="100" max="1000" step="50" value="400" oninput="updateCfg('del', this.value, 'vDelay', ' ms')">
@@ -267,19 +292,15 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
       <input type="range" min="1" max="10" step="1" value="4" oninput="updateCfg('fls', this.value, 'vFlashes', ' Piscadas')">
     </div>
 
-    <div class="grid-2">
-      <div class="slider-row">
-        <div class="slider-header"><span>Sensibilidade ao Bumbo</span><span class="slider-val" id="vThresh">0.40</span></div>
-        <input type="range" min="15" max="85" value="40" oninput="updateCfgFloat('thr', this.value, 'vThresh')">
-      </div>
-      <div class="slider-row">
-        <div class="slider-header"><span>Intensidade / Brilho</span><span class="slider-val" id="vIntStrobe">255</span></div>
-        <input type="range" min="50" max="255" value="255" oninput="updateCfg('istr', this.value, 'vIntStrobe', '')">
-      </div>
+    <div class="slider-row">
+      <div class="slider-header"><span>Sensibilidade ao Bumbo</span><span class="slider-val" id="vThresh">0.40</span></div>
+      <input type="range" min="15" max="85" value="40" oninput="updateCfgFloat('thr', this.value, 'vThresh')">
     </div>
 
-    <div class="btn-group" style="margin-top: 6px;">
-      <button class="selected" onclick="testarStrobe()">⚡ Testar Disparo do Strobe Agora</button>
+    <div class="btn-group" style="margin-top: 10px;">
+      <button class="selected" onclick="testarStrobe()">⚡ Testar Piscadas</button>
+      <button class="warning" onclick="forcarStrobe(1)">🔦 Forçar 100% LIGADO</button>
+      <button class="danger" onclick="forcarStrobe(0)">⬛ Apagar</button>
     </div>
   </div>
 
@@ -348,6 +369,12 @@ function togglePower() {
   fetch('/power?val=' + (powerState ? 1 : 0));
 }
 
+function setPinoStrobe(pin) {
+  ['pin0', 'pin1', 'pin3', 'pin10'].forEach(id => document.getElementById(id).className = '');
+  document.getElementById('pin' + pin).className = 'selected';
+  fetch('/setpin?pin=' + pin).then(() => showToast('🔌 Pino do Strobe alterado para GPIO ' + pin));
+}
+
 function updateCfg(param, val, labelId, sufixo) {
   document.getElementById(labelId).innerText = val + sufixo;
   fetch('/cfg?' + param + '=' + val);
@@ -367,6 +394,11 @@ function setModo(m) {
 
 function testarStrobe() {
   fetch('/teststrobe');
+}
+
+function forcarStrobe(val) {
+  setModo(1);
+  fetch('/forcarstrobe?val=' + val);
 }
 
 function testarCor(r, g, b) {
@@ -423,9 +455,29 @@ void handleModo() {
   if (server.hasArg("val")) {
     modoOperacao = server.arg("val").toInt();
     if (modoOperacao == 0) {
-      setStrobe(0);
+      strobeFixoOn = false;
+      setStrobe(false);
       setGloboRGB(0, 0, 0);
     }
+  }
+  server.sendHeader("Connection", "close");
+  server.send(200, "text/plain", "OK");
+}
+
+void handleSetPin() {
+  if (server.hasArg("pin")) {
+    int p = server.arg("pin").toInt();
+    aplicarPinoStrobe(p);
+  }
+  server.sendHeader("Connection", "close");
+  server.send(200, "text/plain", "OK");
+}
+
+void handleForcarStrobe() {
+  if (server.hasArg("val")) {
+    modoOperacao = 1;
+    strobeFixoOn = (server.arg("val").toInt() == 1);
+    setStrobe(strobeFixoOn);
   }
   server.sendHeader("Connection", "close");
   server.send(200, "text/plain", "OK");
@@ -470,6 +522,7 @@ void handleTestServo() {
 
 void handleSalvar() {
   prefs.begin("lights_cfg", false);
+  prefs.putInt("pstr", pinoStrobeAtual);
   prefs.putInt("del", cfg.duracaoTotalMs);
   prefs.putInt("fls", cfg.quantidadeFlashes);
   prefs.putInt("istr", cfg.intensidadeStrobe);
@@ -490,11 +543,11 @@ void setup() {
   Serial.begin(115200);
   delay(500);
   Serial.println("\n==================================================");
-  Serial.println(" ESP32-C3: NÓ DE ILUMINAÇÃO & SERVO (Com Painel Web)");
+  Serial.println(" ESP32-C3: NÓ DE ILUMINAÇÃO & SERVO (v2.0)");
   Serial.println("==================================================");
 
-  // Carrega configurações da Flash
   prefs.begin("lights_cfg", true);
+  pinoStrobeAtual = prefs.getInt("pstr", 0);
   cfg.duracaoTotalMs = prefs.getInt("del", 400);
   cfg.quantidadeFlashes = prefs.getInt("fls", 4);
   cfg.intensidadeStrobe = prefs.getInt("istr", 255);
@@ -505,15 +558,16 @@ void setup() {
   cfg.freqVarredura = prefs.getFloat("fser", 0.4f);
   prefs.end();
 
-  pinMode(PIN_STROBE_BRANCO, OUTPUT);
+  // Inicializa pinos
+  aplicarPinoStrobe(pinoStrobeAtual);
   pinMode(PIN_GLOBO_R, OUTPUT);
   pinMode(PIN_GLOBO_G, OUTPUT);
   pinMode(PIN_GLOBO_B, OUTPUT);
   pinMode(PIN_SERVO_GLOBO, OUTPUT);
   pinMode(PIN_LED_ONBOARD, OUTPUT);
 
-  // Auto-teste
-  setStrobe(255); delay(200); setStrobe(0);
+  // AUTO-TESTE INICIAL (Teste digital direto de 300ms no Strobe)
+  setStrobe(true); delay(300); setStrobe(false);
   setGloboRGB(100, 0, 0); delay(100);
   setGloboRGB(0, 100, 0); delay(100);
   setGloboRGB(0, 0, 100); delay(100);
@@ -536,8 +590,10 @@ void setup() {
 
   // Rotas Web
   server.on("/", handleRoot);
-  server.on("/modo", handleModo);
   server.on("/power", handlePower);
+  server.on("/modo", handleModo);
+  server.on("/setpin", handleSetPin);
+  server.on("/forcarstrobe", handleForcarStrobe);
   server.on("/cfg", handleCfg);
   server.on("/teststrobe", handleTestStrobe);
   server.on("/testcor", handleTestCor);
@@ -559,12 +615,14 @@ void loop() {
   float tempo_s = agora / 1000.0f;
 
   server.handleClient();
-  atualizarServo(agoraUs);
+
   if (!sistemaLigado) {
     desligarTudo();
     delay(1);
     return;
   }
+
+  atualizarServo(agoraUs);
   processarStrobe(agora);
 
   if (WiFi.status() != WL_CONNECTED) {
@@ -623,7 +681,7 @@ void loop() {
           if (nivel_vocal < 0.05f) nivel_vocal = nivel_med;
           nivel_vocal = constrain(nivel_vocal, 0.0f, 1.0f);
 
-          // A. CONTROLE DE DISPARO DO STROBE (Com Contagem e Delay)
+          // A. CONTROLE DE DISPARO DO STROBE
           if (modoOperacao == 0) {
             bool kickValido = (pico_grave || nivel_grave >= cfg.threshGrave) && (agora - ultimoKickValido >= COOLDOWN_KICK_MS);
             if (kickValido) {
@@ -653,7 +711,7 @@ void loop() {
                 setServoAngulo(90.0f);
               }
             } 
-            else { // media_energia / fallback
+            else {
               setServoVarredura(cfg.freqVarredura, (float)cfg.anguloMin, (float)cfg.anguloMax, tempo_s);
             }
           }

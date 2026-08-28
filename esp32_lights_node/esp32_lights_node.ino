@@ -41,7 +41,7 @@ char packetBuffer[2048];
 // ------------------------------------------------------------------------------
 // 3. PARÂMETROS DE CALIBRAÇÃO & CONTROLE DOS ATUADORES
 // ------------------------------------------------------------------------------
-int modoOperacao = 0; // 0 = Áudio Automático, 1 = Manual / Teste
+bool sistemaLigado = true; // Master Power Switch\nint modoOperacao = 0; // 0 = Áudio Automático, 1 = Manual / Teste
 
 struct ConfigLuzes {
   // STROBE
@@ -240,6 +240,11 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
   <h1>⚡ Controle de Iluminação & Servo</h1>
   <div class="subtitle">Strobe (Piscadas/Delay) | Globo RGB | Servo SG90</div>
 
+  <!-- MASTER POWER BUTTON -->
+  <div class="card" style="text-align: center; padding: 10px;">
+    <button id="btnPower" class="success" style="font-size: 1.1rem; padding: 12px; width: 100%; border-radius: 10px;" onclick="togglePower()">🟢 SISTEMA LIGADO (Clique para Desligar Tudo)</button>
+  </div>
+
   <div class="card">
     <div class="card-title">🎮 Modo de Operação</div>
     <div class="btn-group">
@@ -334,6 +339,15 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
 </div>
 
 <script>
+let powerState = true;
+function togglePower() {
+  powerState = !powerState;
+  const btn = document.getElementById('btnPower');
+  btn.className = powerState ? 'success' : 'danger';
+  btn.innerText = powerState ? '🟢 SISTEMA LIGADO (Clique para Desligar Tudo)' : '🔴 SISTEMA DESLIGADO (Clique para Ligar)';
+  fetch('/power?val=' + (powerState ? 1 : 0));
+}
+
 function updateCfg(param, val, labelId, sufixo) {
   document.getElementById(labelId).innerText = val + sufixo;
   fetch('/cfg?' + param + '=' + val);
@@ -388,6 +402,17 @@ function salvarFlash() {
 // ------------------------------------------------------------------------------
 // 6. ROTAS DO WEB SERVER
 // ------------------------------------------------------------------------------
+
+void handlePower() {
+  if (server.hasArg("val")) {
+    sistemaLigado = (server.arg("val").toInt() == 1);
+    if (!sistemaLigado) {
+      desligarTudo();
+    }
+  }
+  server.sendHeader("Connection", "close");
+  server.send(200, "text/plain", "OK");
+}
 
 void handleRoot() {
   server.sendHeader("Connection", "close");
@@ -512,6 +537,7 @@ void setup() {
   // Rotas Web
   server.on("/", handleRoot);
   server.on("/modo", handleModo);
+  server.on("/power", handlePower);
   server.on("/cfg", handleCfg);
   server.on("/teststrobe", handleTestStrobe);
   server.on("/testcor", handleTestCor);
@@ -534,6 +560,11 @@ void loop() {
 
   server.handleClient();
   atualizarServo(agoraUs);
+  if (!sistemaLigado) {
+    desligarTudo();
+    delay(1);
+    return;
+  }
   processarStrobe(agora);
 
   if (WiFi.status() != WL_CONNECTED) {

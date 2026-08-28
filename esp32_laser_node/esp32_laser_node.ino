@@ -35,7 +35,7 @@ bool dmxInicializado = false;
 
 uint8_t dmxCanais[16];
 unsigned long ultimoEnvioDmx = 0;
-int modoOperacaoWeb = 0; // 0 = Áudio Automático, 1 = Mesa DMX, 2 = Bancada de Testes
+bool sistemaLigado = true; // Master Power Switch\nint modoOperacaoWeb = 0; // 0 = Áudio Automático, 1 = Mesa DMX, 2 = Bancada de Testes
 
 #define MAX_PADROES 20
 uint8_t listaBumbo[MAX_PADROES] = {70, 90, 110, 130, 40, 55};
@@ -300,6 +300,11 @@ const char HTML_INDEX_LASER[] PROGMEM = R"rawliteral(
   <h1>⚡ Laser DMX Studio Pro (Dedicado)</h1>
   <div class="subtitle">Áudio Automático | Mesa DMX 16 Canais | Bancada de Testes</div>
 
+  <!-- MASTER POWER BUTTON -->
+  <div class="card" style="text-align: center; padding: 10px;">
+    <button id="btnPowerLaser" class="success" style="font-size: 1.1rem; padding: 12px; width: 100%; border-radius: 10px;" onclick="togglePowerLaser()">🟢 LASER LIGADO (Clique para Desligar Tudo)</button>
+  </div>
+
   <div class="card">
     <div class="card-title">🎮 Modo de Operação</div>
     <div class="btn-group">
@@ -457,6 +462,15 @@ let listaVocalArr = [25, 85, 120, 160, 190, 215];
 let padraoAtualTeste = 70;
 let autoScan = false;
 
+let powerStateLaser = true;
+function togglePowerLaser() {
+  powerStateLaser = !powerStateLaser;
+  const btn = document.getElementById('btnPowerLaser');
+  btn.className = powerStateLaser ? 'success' : 'danger';
+  btn.innerText = powerStateLaser ? '🟢 LASER LIGADO (Clique para Desligar Tudo)' : '🔴 LASER DESLIGADO (Clique para Ligar)';
+  fetch('/power?val=' + (powerStateLaser ? 1 : 0));
+}
+
 function renderTags() {
   document.getElementById('inBumbo').value = listaBumboArr.join(',');
   document.getElementById('inVocal').value = listaVocalArr.join(',');
@@ -587,6 +601,21 @@ window.onload = renderTags;
 </html>
 )rawliteral";
 
+void handlePowerLaser() {
+  if (server.hasArg("val")) {
+    sistemaLigado = (server.arg("val").toInt() == 1);
+    if (!sistemaLigado) {
+      dmxCanais[0] = 0; // Blackout Total
+      enviarFrameDMX();
+    } else {
+      dmxCanais[0] = 50; // Reabre o laser
+      enviarFrameDMX();
+    }
+  }
+  server.sendHeader("Connection", "close");
+  server.send(200, "text/plain", "OK");
+}
+
 void handleRoot() { server.sendHeader("Connection", "close"); server.send(200, "text/html", HTML_INDEX_LASER); }
 void handleModo() {
   if (server.hasArg("val")) {
@@ -680,6 +709,7 @@ void setup() {
 
   server.on("/", handleRoot);
   server.on("/modo", handleModo);
+  server.on("/power", handlePowerLaser);
   server.on("/calib", handleCalib);
   server.on("/setteste", handleSetTeste);
   server.on("/paramteste", handleParamTeste);
@@ -703,6 +733,16 @@ void loop() {
   ultimoCicloMs = agora;
 
   server.handleClient();
+
+  if (!sistemaLigado) {
+    dmxCanais[0] = 0; // Força Blackout Total
+    if (agora - ultimoEnvioDmx >= 33 && dmxInicializado) {
+      ultimoEnvioDmx = agora;
+      enviarFrameDMX();
+    }
+    delay(1);
+    return;
+  }
 
   if (modoOperacaoWeb == 2) {
     atualizarModoTeste(agora);

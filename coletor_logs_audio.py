@@ -163,9 +163,7 @@ def main():
                     sys.stdout.flush()
 
     except KeyboardInterrupt:
-        print("
-
-" + "=" * 70)
+        print("\n\n" + "=" * 70)
         print(" 📋 RESUMO DA SESSÃO DE COLETA MUSICAL")
         print("=" * 70)
         duracao = time.time() - inicio_sessao
@@ -198,8 +196,7 @@ def main():
                 "amostras": logs_coletados
             }, f, indent=2)
 
-        print(f"
-[OK] Dados gravados com sucesso em: {nome_arquivo_log}")
+        print(f"\n[OK] Dados gravados com sucesso em: {nome_arquivo_log}")
         print("=" * 70)
 
 if __name__ == "__main__":

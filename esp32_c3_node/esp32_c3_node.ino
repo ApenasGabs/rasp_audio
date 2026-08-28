@@ -1,7 +1,7 @@
 /*
  * ==============================================================================
  * PROJETO: Audio to Light - NÓ RECEPTOR ESP32-C3 SUPER MINI (COM DMX512)
- * VERSÃO: 3.3 (Laser Rítmico Dinâmico: Pulsação no Beat, Troca de Cor e Padrão)
+ * VERSÃO: 3.4 (Laser Rítmico com Tamanho Mínimo Amplo e Aberto)
  * ==============================================================================
  */
 
@@ -41,8 +41,8 @@ char packetBuffer[2048];
 uint8_t dmxCanais[16];
 unsigned long ultimoEnvioDmx = 0;
 
-// Lista de Padrões Geométricos Nítidos (Círculo, Zigzag, Quadrado, Triângulo, Túnel, Onda)
-const uint8_t padroesLaser[] = {10, 25, 40, 55, 70, 90, 110, 130};
+// Lista de Padrões Geométricos Nítidos e Expressivos
+const uint8_t padroesLaser[] = {12, 25, 40, 55, 70, 90, 110, 130};
 const int totalPadroes = sizeof(padroesLaser) / sizeof(padroesLaser[0]);
 int indicePadrao = 0;
 
@@ -52,7 +52,7 @@ const int totalCores = sizeof(coresLaser) / sizeof(coresLaser[0]);
 int indiceCor = 0;
 
 int contadorBatidas = 0;
-float zoomAtual = 60.0f; // Envelope dinâmico de tamanho
+float zoomAtual = 135.0f; // Tamanho base amplo e aberto (nunca fica pequeno)
 
 // ------------------------------------------------------------------------------
 // 4. VARIÁVEIS DE ESTADO E TEMPORIZAÇÃO
@@ -108,7 +108,7 @@ void atualizarLaserDMX(String modo, float nivel_graves, bool pico_grave, float n
   // CH2: Velocidade padrão
   dmxCanais[1] = 128;
 
-  // CH14 e CH16: Sem corte ou desenho gradual (feixe 100% visível)
+  // CH14 e CH16: Sem corte ou desenho gradual (feixe sólido)
   dmxCanais[13] = 0;
   dmxCanais[14] = 255;
   dmxCanais[15] = 0;
@@ -118,10 +118,10 @@ void atualizarLaserDMX(String modo, float nivel_graves, bool pico_grave, float n
   // A. TROCA DE COR E PADRÃO NO RITMO DO KICK / GRAVE
   // -------------------------------------------------------------------------
   if (pico_grave) {
-    // A cada batida forte, troca a cor instantaneamente (Color Beat)
+    // A cada batida forte, troca a cor instantaneamente
     indiceCor = (indiceCor + 1) % totalCores;
     
-    // A cada 4 batidas, troca o desenho (Círculo -> Zigzag -> Túnel -> etc)
+    // A cada 4 batidas, troca o desenho
     contadorBatidas++;
     if (contadorBatidas >= 4) {
       indicePadrao = (indicePadrao + 1) % totalPadroes;
@@ -131,38 +131,38 @@ void atualizarLaserDMX(String modo, float nivel_graves, bool pico_grave, float n
 
   // CH3: Cor atual sólida de alto impacto
   dmxCanais[2] = coresLaser[indiceCor];
-  dmxCanais[3] = 0; // Sem fluxo confuso; cor pura no ritmo
+  dmxCanais[3] = 0;
 
   // CH5: Padrão geométrico atual
   dmxCanais[4] = padroesLaser[indicePadrao];
 
   // -------------------------------------------------------------------------
-  // B. PULSAÇÃO DE TAMANHO / ZOOM (BEAT PUMP & BOUNCE)
+  // B. PULSAÇÃO DE TAMANHO / ZOOM (BASE AMPLA: 135 A 255)
   // -------------------------------------------------------------------------
-  // Tamanho alvo: compacto em repouso (~60), explode nas batidas e na voz forte (~220)
-  float zoomAlvo = 60.0f + (nivel_graves * 140.0f) + (nivel_vocal * 50.0f);
+  // Tamanho base amplo em repouso (~135), explode para 250+ nas batidas e vocal
+  float zoomAlvo = 135.0f + (nivel_graves * 85.0f) + (nivel_vocal * 35.0f);
   if (pico_grave) {
-    zoomAlvo = 230.0f; // Explosão imediata no bumbo
+    zoomAlvo = 255.0f; // Explosão máxima no bumbo
   }
 
-  // Envelope Follower: Sobe instantaneamente, decai suavemente no ritmo
+  // Envelope Follower: Sobe instantaneamente, decai suavemente até o tamanho base de 135
   if (zoomAlvo > zoomAtual) {
     zoomAtual = zoomAlvo; // Ataque rápido
   } else {
-    zoomAtual = max(60.0f, zoomAtual - (180.0f * deltaTempo)); // Decaimento suave
+    zoomAtual = max(135.0f, zoomAtual - (140.0f * deltaTempo)); // Decaimento suave até 135
   }
 
-  dmxCanais[5] = (uint8_t)constrain(zoomAtual, 50.0f, 245.0f); // CH6: Tamanho do desenho
+  dmxCanais[5] = (uint8_t)constrain(zoomAtual, 130.0f, 255.0f); // CH6: Tamanho amplo
 
   // -------------------------------------------------------------------------
   // C. ONDULAÇÃO NO VOCAL & ROTAÇÃO RÍTMICA
   // -------------------------------------------------------------------------
-  // CH13: Ondulação ativada pelo canto/voz
+  // CH13: Ondulação no canto/voz
   float vocal_curva = constrain(pow(nivel_vocal, 0.70f), 0.0f, 1.0f);
-  dmxCanais[12] = (uint8_t)(vocal_curva * 200.0f);
+  dmxCanais[12] = (uint8_t)(vocal_curva * 180.0f);
 
   if (modo == "alta_energia") {
-    dmxCanais[7] = 210; // CH8: Rotação rápida
+    dmxCanais[7] = 220; // CH8: Rotação rápida
     dmxCanais[8] = (pico_grave) ? 160 : 64; // CH9: Flip horizontal nos kicks
     dmxCanais[9] = 64;
     dmxCanais[10] = 64;
@@ -176,7 +176,7 @@ void atualizarLaserDMX(String modo, float nivel_graves, bool pico_grave, float n
     dmxCanais[11] = 64;
   }
   else { // media_energia / fallback
-    dmxCanais[7] = 160;
+    dmxCanais[7] = 165; // Rotação moderada
     dmxCanais[8] = 64;
     dmxCanais[9] = 64;
     dmxCanais[10] = 64;
@@ -270,7 +270,7 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
   Serial.println("\n==================================================");
-  Serial.println(" Audio to Light - ESP32-C3 (Laser Ritmico 120BPM)");
+  Serial.println(" Audio to Light - ESP32-C3 (Laser Aberto & Ritmico)");
   Serial.println("==================================================");
 
   pinMode(PIN_STROBE_BRANCO, OUTPUT);
@@ -393,7 +393,7 @@ void loop() {
           if (nivel_vocal < 0.05f) nivel_vocal = nivel_med;
           nivel_vocal = constrain(nivel_vocal, 0.0f, 1.0f);
 
-          // 1. ATUALIZA LASER DMX COM PULSAÇÃO RÍTMICA E TROCA DE COR NO BEAT
+          // 1. ATUALIZA LASER DMX COM TAMANHO AMPLO E PULSAÇÃO NO BEAT
           atualizarLaserDMX(modo_atual, nivel_grave, pico_grave, nivel_vocal, deltaTempo);
 
           // 2. GLOBO RGB

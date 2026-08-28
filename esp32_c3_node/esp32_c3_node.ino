@@ -1,7 +1,7 @@
 /*
  * ==============================================================================
- * PROJETO: Audio to Light - NÓ RECEPTOR ESP32-C3 SUPER MINI (COM DMX512 + WEB STUDIO)
- * VERSÃO: 5.2 (3 Modos: Áudio Automático, Manual DMX e Bancada de Testes / Scanner)
+ * PROJETO: Audio to Light - NÓ RECEPTOR ESP32-C3 SUPER MINI (DMX512 STUDIO PRO)
+ * VERSÃO: 5.3 (Mesa DMX Virtual de 16 Canais + Controle Total de Tamanho e Posição)
  * ==============================================================================
  */
 
@@ -41,12 +41,12 @@ bool dmxInicializado = false;
 #define PIN_LED_ONBOARD      8   // LED de status onboard
 
 // ------------------------------------------------------------------------------
-// 3. BUFFER DMX512 & MODOS DE OPERAÇÃO
+// 3. BUFFER DMX512 (16 Canais) & ESTADOS
 // ------------------------------------------------------------------------------
 uint8_t dmxCanais[16];
 unsigned long ultimoEnvioDmx = 0;
 
-// Modos de Operação: 0 = Áudio Automático (UDP), 1 = Manual DMX, 2 = Bancada de Testes / Scanner
+// Modo de Operação: 0 = Áudio Automático, 1 = Mesa DMX Manual (16 Sliders), 2 = Bancada de Testes
 int modoOperacaoWeb = 0;
 
 #define MAX_PADROES 20
@@ -59,10 +59,9 @@ uint8_t listaVocal[MAX_PADROES] = {25, 85, 120, 160, 190, 215};
 int totalListaVocal = 6;
 int indiceVocal = 0;
 
-// Parâmetros de calibração
 struct ParametrosCalibracao {
-  int zoomMinimo = 180;
-  int zoomMaximo = 255;
+  int zoomMinimo = 190;        // Tamanho de repouso (0-255)
+  int zoomMaximo = 255;        // Tamanho no kick (0-255)
   int sensibilidadeVocal = 175;
   int velocidadeRotacao = 170;
   int batidasPorTroca = 4;
@@ -77,7 +76,9 @@ int indiceCor = 0;
 
 // Variáveis do Modo Bancada de Testes
 uint8_t padraoTesteAtual = 70;
-uint8_t corTesteAtual = 12;
+int zoomTeste = 220;
+int rotacaoTeste = 170;
+int corTeste = 12;
 bool autoScanAtivo = false;
 unsigned long ultimoAutoScan = 0;
 unsigned long simulaKickAte = 0;
@@ -88,7 +89,7 @@ unsigned long ultimoKickValido = 0;
 const unsigned long COOLDOWN_KICK_MS = 260;
 int contadorBatidasBumbo = 0;
 
-float zoomAtual = 180.0f;
+float zoomAtual = 190.0f;
 float ultimoNivelVocal = 0.0f;
 unsigned long fimGlitchSilaba = 0;
 unsigned long ultimoDisparoSilaba = 0;
@@ -124,10 +125,25 @@ void inicializarDMX() {
   digitalWrite(PIN_DMX_ENABLE, HIGH);
   pinMode(PIN_DMX_TX, OUTPUT);
   digitalWrite(PIN_DMX_TX, HIGH);
+
   memset(dmxCanais, 0, sizeof(dmxCanais));
-  dmxCanais[0] = 50; // Luz sempre ativa (100% contínua)
-  dmxCanais[1] = 128;
-  dmxCanais[14] = 255;
+  dmxCanais[0] = 50;   // CH1: Modo Manual Console (Luz Aberta)
+  dmxCanais[1] = 128;  // CH2: Velocidade padrão
+  dmxCanais[2] = 12;   // CH3: Cor Vermelha
+  dmxCanais[3] = 0;    // CH4: Sem fluxo
+  dmxCanais[4] = 70;   // CH5: Túnel
+  dmxCanais[5] = 210;  // CH6: Tamanho Grande
+  dmxCanais[6] = 0;    // CH7: Zoom manual (CH6 ativo)
+  dmxCanais[7] = 170;  // CH8: Rotação suave
+  dmxCanais[8] = 64;   // CH9: Flip H Centro
+  dmxCanais[9] = 64;   // CH10: Flip V Centro
+  dmxCanais[10] = 64;  // CH11: Posição X Centro
+  dmxCanais[11] = 64;  // CH12: Posição Y Centro
+  dmxCanais[12] = 0;   // CH13: Sem onda
+  dmxCanais[13] = 0;   // CH14: Sem desenho gradual
+  dmxCanais[14] = 255; // CH15: Velocidade máxima dos espelhos
+  dmxCanais[15] = 0;   // CH16: Exibição padrão contínua
+
   dmxInicializado = true;
 }
 
@@ -172,7 +188,7 @@ String listaParaString(uint8_t* lista, int total) {
 }
 
 void atualizarLaserDMX_Audio(String modo, float nivel_graves, bool pico_grave, float nivel_vocal, float tempo_s, float deltaTempo, unsigned long agora) {
-  dmxCanais[0] = 50;
+  dmxCanais[0] = 50;  // Luz sempre aberta
   dmxCanais[1] = 128;
   dmxCanais[13] = 0;
   dmxCanais[14] = 255;
@@ -248,10 +264,9 @@ void atualizarLaserDMX_Audio(String modo, float nivel_graves, bool pico_grave, f
 }
 
 // ------------------------------------------------------------------------------
-// 6. MODO BANCADA DE TESTES & SCANNER (Sem interferência de áudio)
+// 6. MODO BANCADA DE TESTES & SCANNER
 // ------------------------------------------------------------------------------
 void atualizarModoTeste(unsigned long agora) {
-  // Auto-Scan: Avança 1 padrão a cada 2 segundos
   if (autoScanAtivo && (agora - ultimoAutoScan >= 2000)) {
     ultimoAutoScan = agora;
     padraoTesteAtual = (padraoTesteAtual + 1) % 256;
@@ -259,9 +274,9 @@ void atualizarModoTeste(unsigned long agora) {
 
   dmxCanais[0] = 50;  // Luz ativa
   dmxCanais[1] = 128;
-  dmxCanais[2] = corTesteAtual;
+  dmxCanais[2] = (uint8_t)corTeste;
   dmxCanais[3] = 0;
-  dmxCanais[4] = padraoTesteAtual; // Padrão exato sendo testado (0 a 255)
+  dmxCanais[4] = padraoTesteAtual;
   dmxCanais[6] = 0;
   dmxCanais[9] = 64;
   dmxCanais[10] = 64;
@@ -270,19 +285,18 @@ void atualizarModoTeste(unsigned long agora) {
   dmxCanais[14] = 255;
   dmxCanais[15] = 0;
 
-  // Simulação de batida ou vocal
   if (agora < simulaKickAte) {
-    dmxCanais[5] = 255; // Tamanho máximo no kick simulado
-    dmxCanais[7] = 240; // Rotação rápida
-    dmxCanais[8] = 180; // Flip
+    dmxCanais[5] = 255;
+    dmxCanais[7] = 240;
+    dmxCanais[8] = 180;
   } else if (agora < simulaVocalAte) {
     dmxCanais[5] = 240;
     dmxCanais[7] = 220;
     dmxCanais[8] = 64;
-    dmxCanais[12] = 180; // Ondulação vocal simulada
+    dmxCanais[12] = 180;
   } else {
-    dmxCanais[5] = 200; // Tamanho padrão visível
-    dmxCanais[7] = 170; // Rotação padrão
+    dmxCanais[5] = (uint8_t)zoomTeste;
+    dmxCanais[7] = (uint8_t)rotacaoTeste;
     dmxCanais[8] = 64;
     dmxCanais[12] = 0;
   }
@@ -379,9 +393,9 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
 <style>
   :root { --bg: #0b1329; --card: #17233f; --primary: #38bdf8; --accent: #f43f5e; --success: #10b981; --warning: #f59e0b; --text: #f8fafc; }
   body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 12px; }
-  .container { max-width: 650px; margin: 0 auto; }
+  .container { max-width: 680px; margin: 0 auto; }
   h1 { text-align: center; color: var(--primary); font-size: 1.4rem; margin-bottom: 2px; }
-  .subtitle { text-align: center; color: #94a3b8; font-size: 0.8rem; margin-bottom: 16px; }
+  .subtitle { text-align: center; color: #94a3b8; font-size: 0.8rem; margin-bottom: 14px; }
   .card { background: var(--card); border-radius: 12px; padding: 14px; margin-bottom: 14px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.3); border: 1px solid #223254; }
   .card-title { font-weight: bold; color: var(--primary); font-size: 1.05rem; margin-bottom: 10px; border-bottom: 1px solid #2a3d66; padding-bottom: 6px; }
   .btn-group { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
@@ -401,30 +415,30 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
   .tag-box { display: flex; gap: 5px; flex-wrap: wrap; margin-bottom: 8px; }
   .tag-btn { background: #1e293b; border: 1px solid #334155; color: #94a3b8; font-size: 0.75rem; padding: 4px 8px; border-radius: 6px; cursor: pointer; }
   .tag-btn.on { background: #0284c7; color: white; border-color: #38bdf8; }
-  .big-badge { text-align: center; font-size: 2.2rem; font-weight: bold; color: var(--primary); background: #0b1329; border: 2px solid #2a3d66; border-radius: 12px; padding: 10px; margin-bottom: 12px; }
+  .big-badge { text-align: center; font-size: 2.2rem; font-weight: bold; color: var(--primary); background: #0b1329; border: 2px solid #2a3d66; border-radius: 12px; padding: 8px; margin-bottom: 10px; }
   .toast { display: none; background: var(--success); color: white; text-align: center; padding: 8px; border-radius: 6px; font-weight: bold; margin-top: 8px; font-size: 0.85rem; }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 </style>
 </head>
 <body>
 <div class="container">
   <h1>⚡ Laser DMX Studio Pro</h1>
-  <div class="subtitle">Áudio Automático | Manual DMX | Bancada de Testes</div>
+  <div class="subtitle">Áudio Automático | Mesa DMX 16 Canais | Bancada de Testes</div>
 
   <div class="card">
     <div class="card-title">🎮 Modo de Operação</div>
     <div class="btn-group">
       <button id="btnAuto" class="active" onclick="setModo(0)">🎵 1. Áudio Automático</button>
-      <button id="btnManual" onclick="setModo(1)">🎛️ 2. Manual Sliders</button>
+      <button id="btnManual" onclick="setModo(1)">🎛️ 2. Mesa DMX (16 Canais)</button>
       <button id="btnTeste" class="warning" onclick="setModo(2)">🔬 3. Bancada de Testes</button>
     </div>
   </div>
 
-  <!-- MODO 3: BANCADA DE TESTES E SCANNER -->
+  <!-- MODO 3: BANCADA DE TESTES & SCANNER -->
   <div class="card" id="cardTeste" style="border: 2px solid var(--warning);">
-    <div class="card-title" style="color: var(--warning);">🔬 3. Bancada de Testes / Scanner de Padrões</div>
-    <div style="font-size: 0.8rem; color: #94a3b8; margin-bottom: 8px;">Explore todos os padrões (0 a 255) sem nenhuma interferência de música:</div>
+    <div class="card-title" style="color: var(--warning);">🔬 3. Bancada de Testes / Scanner (Sem Música)</div>
     
-    <div class="big-badge" id="lblPadraoGrande">CH5: 70</div>
+    <div class="big-badge" id="lblPadraoGrande">CH5 (Padrão): 70</div>
 
     <div class="btn-group">
       <button onclick="navPadrao(-1)">◀ Anterior (-1)</button>
@@ -434,19 +448,75 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
     </div>
 
     <div class="slider-row">
-      <div class="slider-header"><span>Padrão DMX (CH5: 0 a 255)</span><span class="slider-val" id="vPadraoSlider">70</span></div>
+      <div class="slider-header"><span>CH5: Padrão / Gobo</span><span class="slider-val" id="vPadraoSlider">70</span></div>
       <input type="range" min="0" max="255" value="70" id="rngPadrao" oninput="setPadraoDireto(this.value)">
+    </div>
+
+    <div class="grid-2">
+      <div class="slider-row">
+        <div class="slider-header"><span>CH6: Tamanho / Zoom</span><span class="slider-val" id="vZoomTeste">220</span></div>
+        <input type="range" min="50" max="255" value="220" oninput="setParamTeste('z', this.value, 'vZoomTeste')">
+      </div>
+      <div class="slider-row">
+        <div class="slider-header"><span>CH8: Rotação</span><span class="slider-val" id="vRotTeste">170</span></div>
+        <input type="range" min="0" max="255" value="170" oninput="setParamTeste('r', this.value, 'vRotTeste')">
+      </div>
+    </div>
+
+    <div class="slider-row">
+      <div class="slider-header"><span>CH3: Cor (12=Vm, 22=Vd, 32=Az, 42=Am, 52=Ciano, 72=Branco)</span><span class="slider-val" id="vCorTeste">12</span></div>
+      <input type="range" min="0" max="255" value="12" oninput="setParamTeste('c', this.value, 'vCorTeste')">
     </div>
 
     <div class="btn-group" style="margin-top: 10px;">
       <button id="btnAutoScan" onclick="toggleAutoScan()">▶️ Iniciar Auto-Scan (2s)</button>
-      <button onclick="simulaKick()">🥁 Simular Batida (Bumbo)</button>
-      <button onclick="simulaVocal()">🎤 Simular Sílaba de Voz</button>
+      <button onclick="simulaKick()">🥁 Simular Bumbo</button>
+      <button onclick="simulaVocal()">🎤 Simular Voz</button>
     </div>
 
     <div class="btn-group" style="margin-top: 6px;">
       <button class="selected" onclick="addPadraoPara('bumbo')">➕ Adicionar ao Bumbo</button>
       <button class="selected" onclick="addPadraoPara('vocal')">➕ Adicionar ao Vocal</button>
+    </div>
+  </div>
+
+  <!-- MODO 2: MESA DMX VIRTUAL (16 CANAIS INDIVIDUAIS) -->
+  <div class="card" id="cardMesaDMX">
+    <div class="card-title">🎛️ 2. Mesa DMX Virtual (16 Canais Individuais do Laser)</div>
+    
+    <div class="slider-row">
+      <div class="slider-header"><span>CH1: Modo de Operação (50=Manual Console DMX)</span><span class="slider-val" id="vCH1">50</span></div>
+      <input type="range" min="0" max="255" value="50" oninput="setDMX(1, this.value, 'vCH1')">
+    </div>
+    <div class="slider-row">
+      <div class="slider-header"><span>CH3: Cor do Laser (10-79=Fixas, 80-255=Efeitos)</span><span class="slider-val" id="vCH3">12</span></div>
+      <input type="range" min="0" max="255" value="12" oninput="setDMX(3, this.value, 'vCH3')">
+    </div>
+    <div class="slider-row">
+      <div class="slider-header"><span>CH5: Seleção de Padrão / Desenho</span><span class="slider-val" id="vCH5">70</span></div>
+      <input type="range" min="0" max="255" value="70" oninput="setDMX(5, this.value, 'vCH5')">
+    </div>
+    <div class="slider-row">
+      <div class="slider-header"><span>CH6: Tamanho / Zoom Manual do Desenho</span><span class="slider-val" id="vCH6">210</span></div>
+      <input type="range" min="0" max="255" value="210" oninput="setDMX(6, this.value, 'vCH6')">
+    </div>
+    <div class="slider-row">
+      <div class="slider-header"><span>CH8: Rotação no Centro (0=Fixo, 130-255=Giro)</span><span class="slider-val" id="vCH8">170</span></div>
+      <input type="range" min="0" max="255" value="170" oninput="setDMX(8, this.value, 'vCH8')">
+    </div>
+    <div class="grid-2">
+      <div class="slider-row">
+        <div class="slider-header"><span>CH11: Posição X</span><span class="slider-val" id="vCH11">64</span></div>
+        <input type="range" min="0" max="127" value="64" oninput="setDMX(11, this.value, 'vCH11')">
+      </div>
+      <div class="slider-row">
+        <div class="slider-header"><span>CH12: Posição Y</span><span class="slider-val" id="vCH12">64</span></div>
+        <input type="range" min="0" max="127" value="64" oninput="setDMX(12, this.value, 'vCH12')">
+      </div>
+    </div>
+    <div class="slider-row">
+      <div class="slider-header"><span>CH13: Onda no Eixo X (Osciloscópio)</span><span class="slider-val" id="vCH13">0</span></div>
+      <input type="range" min="0" max="255" value="0" oninput="setDMX(13, this.value, 'vCH13')">
     </div>
   </div>
 
@@ -483,10 +553,10 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
   </div>
 
   <div class="card">
-    <div class="card-title">⚙️ Calibração de Tamanho & Rotação</div>
+    <div class="card-title">⚙️ Calibração de Tamanho do Modo Musical</div>
     <div class="slider-row">
-      <div class="slider-header"><span>Tamanho Mínimo (Base Ampla)</span><span class="slider-val" id="vZoomMin">180</span></div>
-      <input type="range" min="100" max="240" value="180" oninput="updateCalib('zmin', this.value, 'vZoomMin')">
+      <div class="slider-header"><span>Tamanho Mínimo (Base Ampla)</span><span class="slider-val" id="vZoomMin">190</span></div>
+      <input type="range" min="100" max="240" value="190" oninput="updateCalib('zmin', this.value, 'vZoomMin')">
     </div>
     <div class="slider-row">
       <div class="slider-header"><span>Tamanho Máximo (Pico do Bumbo)</span><span class="slider-val" id="vZoomMax">255</span></div>
@@ -549,10 +619,23 @@ function renderTags() {
 
 function setPadraoDireto(val) {
   padraoAtualTeste = parseInt(val);
-  document.getElementById('lblPadraoGrande').innerText = 'CH5: ' + padraoAtualTeste;
+  document.getElementById('lblPadraoGrande').innerText = 'CH5 (Padrão): ' + padraoAtualTeste;
   document.getElementById('vPadraoSlider').innerText = padraoAtualTeste;
   document.getElementById('rngPadrao').value = padraoAtualTeste;
+  setModo(2);
   fetch('/setteste?p=' + padraoAtualTeste);
+}
+
+function setParamTeste(param, val, labelId) {
+  document.getElementById(labelId).innerText = val;
+  setModo(2);
+  fetch('/paramteste?' + param + '=' + val);
+}
+
+function setDMX(ch, val, labelId) {
+  document.getElementById(labelId).innerText = val;
+  setModo(1);
+  fetch('/dmx?ch=' + ch + '&val=' + val);
 }
 
 function navPadrao(delta) {
@@ -565,14 +648,17 @@ function toggleAutoScan() {
   const btn = document.getElementById('btnAutoScan');
   btn.innerText = autoScan ? '⏹️ Parar Auto-Scan' : '▶️ Iniciar Auto-Scan (2s)';
   btn.className = autoScan ? 'danger' : '';
+  setModo(2);
   fetch('/autoscan?val=' + (autoScan ? 1 : 0));
 }
 
 function simulaKick() {
+  setModo(2);
   fetch('/simulakick');
 }
 
 function simulaVocal() {
+  setModo(2);
   fetch('/simulavocal');
 }
 
@@ -687,7 +773,29 @@ void handleModo() {
 void handleSetTeste() {
   if (server.hasArg("p")) {
     padraoTesteAtual = (uint8_t)constrain(server.arg("p").toInt(), 0, 255);
-    modoOperacaoWeb = 2; // Força modo teste
+    modoOperacaoWeb = 2;
+  }
+  server.sendHeader("Connection", "close");
+  server.send(200, "text/plain", "OK");
+}
+
+void handleParamTeste() {
+  if (server.hasArg("z")) zoomTeste = constrain(server.arg("z").toInt(), 0, 255);
+  if (server.hasArg("r")) rotacaoTeste = constrain(server.arg("r").toInt(), 0, 255);
+  if (server.hasArg("c")) corTeste = constrain(server.arg("c").toInt(), 0, 255);
+  modoOperacaoWeb = 2;
+  server.sendHeader("Connection", "close");
+  server.send(200, "text/plain", "OK");
+}
+
+void handleDMX() {
+  if (server.hasArg("ch") && server.hasArg("val")) {
+    int ch = server.arg("ch").toInt();
+    int val = server.arg("val").toInt();
+    if (ch >= 1 && ch <= 16) {
+      dmxCanais[ch - 1] = constrain(val, 0, 255);
+      modoOperacaoWeb = 1; // Força modo mesa DMX manual
+    }
   }
   server.sendHeader("Connection", "close");
   server.send(200, "text/plain", "OK");
@@ -703,14 +811,14 @@ void handleAutoScan() {
 }
 
 void handleSimulaKick() {
-  simulaKickAte = millis() + 250; // Pulso de 250ms
+  simulaKickAte = millis() + 250;
   modoOperacaoWeb = 2;
   server.sendHeader("Connection", "close");
   server.send(200, "text/plain", "OK");
 }
 
 void handleSimulaVocal() {
-  simulaVocalAte = millis() + 200; // Glitch de 200ms
+  simulaVocalAte = millis() + 200;
   modoOperacaoWeb = 2;
   server.sendHeader("Connection", "close");
   server.send(200, "text/plain", "OK");
@@ -764,11 +872,11 @@ void setup() {
   Serial.begin(115200);
   delay(500);
   Serial.println("\n==================================================");
-  Serial.println(" Audio to Light - ESP32-C3 Studio v5.2 (Test Bench)");
+  Serial.println(" Audio to Light - ESP32-C3 Studio v5.3 (Mesa DMX 16)");
   Serial.println("==================================================");
 
   prefs.begin("laser_cfg", true);
-  calib.zoomMinimo = prefs.getInt("zmin", 180);
+  calib.zoomMinimo = prefs.getInt("zmin", 190);
   calib.zoomMaximo = prefs.getInt("zmax", 255);
   calib.sensibilidadeVocal = prefs.getInt("voc", 175);
   calib.velocidadeRotacao = prefs.getInt("rot", 170);
@@ -817,6 +925,8 @@ void setup() {
   server.on("/modo", handleModo);
   server.on("/calib", handleCalib);
   server.on("/setteste", handleSetTeste);
+  server.on("/paramteste", handleParamTeste);
+  server.on("/dmx", handleDMX);
   server.on("/autoscan", handleAutoScan);
   server.on("/simulakick", handleSimulaKick);
   server.on("/simulavocal", handleSimulaVocal);
@@ -845,11 +955,12 @@ void loop() {
 
   atualizarServo(agoraUs);
 
-  // MODO 2: BANCADA DE TESTES (Scanner de Padrões)
+  // MODO 2: BANCADA DE TESTES
   if (modoOperacaoWeb == 2) {
     atualizarModoTeste(agora);
   }
 
+  // TRANSMISSÃO CONTÍNUA DMX512 (a 30Hz)
   if (agora - ultimoEnvioDmx >= 33 && dmxInicializado) {
     ultimoEnvioDmx = agora;
     enviarFrameDMX();
@@ -911,7 +1022,7 @@ void loop() {
           if (nivel_vocal < 0.05f) nivel_vocal = nivel_med;
           nivel_vocal = constrain(nivel_vocal, 0.0f, 1.0f);
 
-          // 1. MODO 0: ÁUDIO AUTOMÁTICO
+          // 1. MODO 0: ÁUDIO AUTOMÁTICO (Só atualiza DMX se estiver no Modo 0)
           if (modoOperacaoWeb == 0) {
             atualizarLaserDMX_Audio(modo_atual, nivel_grave, pico_grave, nivel_vocal, tempo_s, deltaTempo, agora);
           }

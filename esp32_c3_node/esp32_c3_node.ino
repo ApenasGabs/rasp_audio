@@ -1,8 +1,7 @@
 /*
  * ==============================================================================
  * PROJETO: Audio to Light - NÓ RECEPTOR ESP32-C3 SUPER MINI (COM DMX512 + WEB SERVER)
- * DESCRIÇÃO: Inclui Web Server HTTP na porta 80 para calibração e teste em tempo real
- *            de todos os 16 canais DMX e parâmetros de áudio pelo navegador!
+ * VERSÃO: 3.5 (Alta Estabilidade Wi-Fi, WiFi.setSleep(false), Inicialização DMX Pós-Boot)
  * ==============================================================================
  */
 
@@ -22,6 +21,7 @@ const unsigned int UDP_PORT = 5005;
 WiFiUDP udp;
 WebServer server(80);
 char packetBuffer[2048];
+bool dmxInicializado = false;
 
 // ------------------------------------------------------------------------------
 // 2. MAPEAMENTO DE PINOS GPIO (ESP32-C3 Super Mini)
@@ -53,8 +53,6 @@ struct ParametrosCalibracao {
   int zoomMaximo = 255;       // Tamanho no pico da batida (0-255)
   int sensibilidadeVocal = 180;// Intensidade de onda na voz (0-255)
   int velocidadeRotacao = 200; // Velocidade de rotação (0-255)
-  int corManual = 12;         // Cor fixa no modo manual (0-255)
-  int padraoManual = 25;      // Padrão no modo manual (0-255)
 } calib;
 
 // Lista de Padrões Geométricos e Cores
@@ -94,17 +92,35 @@ float ladoSaltoServo = 30.0f;
 // 5. DRIVER DE TRANSMISSÃO DMX512 (UART a 250 kbps com Break/MAB)
 // ------------------------------------------------------------------------------
 
+void inicializarDMX() {
+  pinMode(PIN_DMX_ENABLE, OUTPUT);
+  digitalWrite(PIN_DMX_ENABLE, HIGH); // Habilita modo TX no MAX485
+  pinMode(PIN_DMX_TX, OUTPUT);
+  digitalWrite(PIN_DMX_TX, HIGH);
+  memset(dmxCanais, 0, sizeof(dmxCanais));
+  dmxInicializado = true;
+}
+
 void enviarFrameDMX() {
+  if (!dmxInicializado) return;
+
+  // 1. Break (Linha em LOW por 100us)
   Serial1.flush();
   pinMode(PIN_DMX_TX, OUTPUT);
   digitalWrite(PIN_DMX_TX, LOW);
   delayMicroseconds(100);
 
+  // 2. MAB (Linha em HIGH por 12us)
   digitalWrite(PIN_DMX_TX, HIGH);
   delayMicroseconds(12);
 
+  // 3. Inicia UART a 250 kbps, 8N2
   Serial1.begin(250000, SERIAL_8N2, -1, PIN_DMX_TX);
+
+  // 4. Start Code DMX (0x00)
   Serial1.write((uint8_t)0x00);
+
+  // 5. Envia os 16 canais DMX do Laser
   Serial1.write(dmxCanais, 16);
 }
 
@@ -198,7 +214,7 @@ void desligarTudo() {
   setStrobe(0);
   setGloboRGB(0, 0, 0);
   setServoAngulo(90.0f);
-  dmxCanais[0] = 0; // Blackout Laser
+  dmxCanais[0] = 0;
   enviarFrameDMX();
 }
 
@@ -379,10 +395,11 @@ function setBlackout() {
 )rawliteral";
 
 // ------------------------------------------------------------------------------
-// 8. ROTAS DO WEB SERVER
+// 8. ROTAS DO WEB SERVER (Com Headers de Liberação Rápida de Conexão)
 // ------------------------------------------------------------------------------
 
 void handleRoot() {
+  server.sendHeader("Connection", "close");
   server.send(200, "text/html", HTML_INDEX);
 }
 
@@ -394,6 +411,7 @@ void handleModo() {
       dmxCanais[14] = 255;
     }
   }
+  server.sendHeader("Connection", "close");
   server.send(200, "text/plain", "OK");
 }
 
@@ -402,6 +420,7 @@ void handleCalib() {
   if (server.hasArg("zmax")) calib.zoomMaximo = server.arg("zmax").toInt();
   if (server.hasArg("voc"))  calib.sensibilidadeVocal = server.arg("voc").toInt();
   if (server.hasArg("rot"))  calib.velocidadeRotacao = server.arg("rot").toInt();
+  server.sendHeader("Connection", "close");
   server.send(200, "text/plain", "OK");
 }
 
@@ -414,6 +433,7 @@ void handleDMX() {
       modoOperacaoWeb = 1; // Ativa modo manual web
     }
   }
+  server.sendHeader("Connection", "close");
   server.send(200, "text/plain", "OK");
 }
 
@@ -422,11 +442,12 @@ void handleDMX() {
 // ------------------------------------------------------------------------------
 void setup() {
   Serial.begin(115200);
-  delay(1000);
+  delay(500);
   Serial.println("\n==================================================");
-  Serial.println(" Audio to Light - ESP32-C3 (Laser DMX + Web Server)");
+  Serial.println(" Audio to Light - ESP32-C3 (Alta Estabilidade Wi-Fi)");
   Serial.println("==================================================");
 
+  // Configuração dos atuadores nos pinos dedicados
   pinMode(PIN_STROBE_BRANCO, OUTPUT);
   pinMode(PIN_GLOBO_R, OUTPUT);
   pinMode(PIN_GLOBO_G, OUTPUT);
@@ -434,48 +455,44 @@ void setup() {
   pinMode(PIN_SERVO_GLOBO, OUTPUT);
   pinMode(PIN_LED_ONBOARD, OUTPUT);
 
-  // Habilita transmissão RS-485
-  pinMode(PIN_DMX_ENABLE, OUTPUT);
-  digitalWrite(PIN_DMX_ENABLE, HIGH);
-
-  // Inicializa UART DMX512
-  pinMode(PIN_DMX_TX, OUTPUT);
-  digitalWrite(PIN_DMX_TX, HIGH);
-  memset(dmxCanais, 0, sizeof(dmxCanais));
-  enviarFrameDMX();
-
-  // AUTO-TESTE INICIAL
-  setStrobe(255); delay(250); setStrobe(0);
-  setGloboRGB(100, 0, 0); delay(150);
-  setGloboRGB(0, 100, 0); delay(150);
-  setGloboRGB(0, 0, 100); delay(150);
+  // AUTO-TESTE RÁPIDO
+  setStrobe(255); delay(200); setStrobe(0);
+  setGloboRGB(100, 0, 0); delay(100);
+  setGloboRGB(0, 100, 0); delay(100);
+  setGloboRGB(0, 0, 100); delay(100);
   setGloboRGB(0, 0, 0);
 
-  // Conexão Wi-Fi
+  // 1. CONEXÃO WI-FI OTIMIZADA (SEM DORMIR O RÁDIO)
   Serial.printf("\n[Wi-Fi] Conectando a: %s ...\n", WIFI_SSID);
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
 
   while (WiFi.status() != WL_CONNECTED) {
     digitalWrite(PIN_LED_ONBOARD, !digitalRead(PIN_LED_ONBOARD));
-    delay(200);
+    delay(150);
     Serial.print(".");
   }
 
-  digitalWrite(PIN_LED_ONBOARD, LOW);
-  Serial.printf("\n==================================================");
-  Serial.printf("\n [SUCESSO] Web Server Ativo no Navegador!");
-  Serial.printf("\n Abra no seu PC ou celular: http://%s", WiFi.localIP().toString().c_str());
-  Serial.printf("\n==================================================\n");
+  // DESATIVA O POWER-SAVE DO WI-FI (Mantém o Web Server sempre responsivo sem quedas!)
+  WiFi.setSleep(false);
 
-  // Inicia Rotas Web
+  digitalWrite(PIN_LED_ONBOARD, LOW); // LED Aceso = Conectado
+  Serial.printf("\n[Wi-Fi] Conectado! IP do ESP32: %s\n", WiFi.localIP().toString().c_str());
+
+  // 2. INICIALIZAÇÃO DO DMX512 (APENAS APÓS O WI-FI ESTAR CONECTADO)
+  // Isso evita qualquer conflito na UART durante a inicialização do rádio!
+  inicializarDMX();
+  Serial.println("[DMX512] Transmissao RS-485 inicializada com sucesso!");
+
+  // 3. INICIA ROTAS WEB
   server.on("/", handleRoot);
   server.on("/modo", handleModo);
   server.on("/calib", handleCalib);
   server.on("/dmx", handleDMX);
   server.begin();
+  Serial.printf("[WEB] Servidor ativo em: http://%s\n", WiFi.localIP().toString().c_str());
 
-  // Inicia Socket UDP
+  // 4. INICIA SOCKET UDP
   udp.begin(UDP_PORT);
   Serial.printf("[UDP] Escutando porta %d...\n", UDP_PORT);
 }
@@ -492,20 +509,20 @@ void loop() {
   float deltaTempo = max(0.001f, (agora - ultimoCicloMs) / 1000.0f);
   ultimoCicloMs = agora;
 
-  // Processa requisições Web do navegador
+  // Processa requisições Web do navegador com prioridade
   server.handleClient();
 
   atualizarServo(agoraUs);
 
   // Envio contínuo DMX512 a ~30Hz (a cada 33ms)
-  if (agora - ultimoEnvioDmx >= 33) {
+  if (agora - ultimoEnvioDmx >= 33 && dmxInicializado) {
     ultimoEnvioDmx = agora;
     enviarFrameDMX();
   }
 
   if (WiFi.status() != WL_CONNECTED) {
     WiFi.reconnect();
-    delay(200);
+    delay(100);
     return;
   }
 
@@ -617,4 +634,6 @@ void loop() {
   if (agora - ultimoPacoteAudio > 4000 && ultimoPacoteAudio > 0 && modoOperacaoWeb == 0) {
     desligarTudo();
   }
+
+  delay(1); // Cede tempo para a pilha TCP/IP do LwIP manter o Web Server ultra-estável
 }

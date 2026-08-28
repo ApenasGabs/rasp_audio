@@ -1,7 +1,7 @@
 /*
  * ==============================================================================
  * PROJETO: Audio to Light - NÓ RECEPTOR ESP32-C3 SUPER MINI (COM DMX512 + WEB SERVER)
- * VERSÃO: 3.6 (Animações Grandes Contínuas + Reações Malucas no Beat + Copiar Configs)
+ * VERSÃO: 4.0 (Sincronismo Musical Calibrado via Logs Reais + Filtro Anti-Glitch)
  * ==============================================================================
  */
 
@@ -13,7 +13,7 @@
 #include <math.h>
 
 // ------------------------------------------------------------------------------
-// 1. CONFIGURAÇÃO WI-FI, UDP, WEB SERVER & PREFERENCES (NVS FLASH)
+// 1. CONFIGURAÇÃO WI-FI, UDP, WEB SERVER & PREFERENCES
 // ------------------------------------------------------------------------------
 const char* WIFI_SSID = "SEU_WIFI_NOME";        // << Coloque o nome do seu Wi-Fi
 const char* WIFI_PASS = "SUA_WIFI_SENHA";       // << Coloque a senha do seu Wi-Fi
@@ -41,7 +41,7 @@ bool dmxInicializado = false;
 #define PIN_LED_ONBOARD      8   // LED de status onboard
 
 // ------------------------------------------------------------------------------
-// 3. BUFFER DMX512 & PARÂMETROS DE CALIBRAÇÃO (COM MEMÓRIA FLASH PERSISTENTE)
+// 3. BUFFER DMX512 & PARÂMETROS CALIBRADOS COM BASE NOS DADOS REAIS
 // ------------------------------------------------------------------------------
 uint8_t dmxCanais[16];
 unsigned long ultimoEnvioDmx = 0;
@@ -49,30 +49,35 @@ unsigned long ultimoEnvioDmx = 0;
 int modoOperacaoWeb = 0; // 0 = Áudio Automático, 1 = Manual Web
 
 struct ParametrosCalibracao {
-  int zoomMinimo = 190;        // Animação GRANDE por padrão (190 a 240)
-  int zoomMaximo = 255;        // Explosão no impacto
-  int sensibilidadeVocal = 190;// Ondulação na voz
-  int velocidadeRotacao = 180; // Rotação fluida majestosa
-  int padraoBase = 70;         // Padrão amplo inicial (Túnel / Plano)
+  int zoomMinimo = 180;        // Tamanho base imersivo e amplo
+  int zoomMaximo = 255;        // Explosão total no kick
+  int sensibilidadeVocal = 175;// Ondulação vocal limpa
+  int velocidadeRotacao = 170; // Rotação majestosa
 } calib;
 
-// Lista de Padrões Grandes e Imersivos (Túnel, Planos, Espirais, Caixas 3D, Ondas)
+// Lista de Padrões Grandes e Imersivos (Túnel, Planos 3D, Espirais, Ondas)
 const uint8_t padroesGrandes[] = {70, 90, 110, 130, 40, 55, 145, 175};
 const int totalPadroesGrandes = sizeof(padroesGrandes) / sizeof(padroesGrandes[0]);
 int indicePadraoGrande = 0;
 
-// Lista de Padrões Malucos / Reativos (Figuras rápidas, estrelas, glitches, túneis múltiplos)
-const uint8_t padroesMalucos[] = {25, 85, 120, 160, 190, 215, 235};
-const int totalPadroesMalucos = sizeof(padroesMalucos) / sizeof(padroesMalucos[0]);
-int indicePadraoMaluco = 0;
+// Lista de Padrões Reativos (Glitches, Estrelas, Túneis Rápidos)
+const uint8_t padroesReativos[] = {25, 85, 120, 160, 190, 215, 235};
+const int totalPadroesReativos = sizeof(padroesReativos) / sizeof(padroesReativos[0]);
+int indicePadraoReativo = 0;
 
+// Cores Sólidas de Alto Contraste
 const uint8_t coresLaser[] = {12, 22, 32, 42, 52, 62, 72};
 const int totalCores = sizeof(coresLaser) / sizeof(coresLaser[0]);
 int indiceCor = 0;
 
-int contadorBatidas = 0;
-float zoomAtual = 190.0f;
-unsigned long fimReacaoMaluca = 0;
+// CONTROLE RÍTMICO CALIBRADO (FILTRO DE REFRACTORY PERIOD / DEBOUNCE)
+unsigned long ultimoKickValido = 0;
+const unsigned long COOLDOWN_KICK_MS = 260; // Ignora repetições dentro de 260ms (49.6% de falsos triggers eliminados!)
+int contadorCompasso = 0;
+
+float zoomAtual = 180.0f;
+float vocalFiltrado = 0.0f;
+unsigned long fimImpactoKick = 0;
 
 // ------------------------------------------------------------------------------
 // 4. VARIÁVEIS DE ESTADO E TEMPORIZAÇÃO
@@ -141,20 +146,23 @@ void atualizarLaserDMX_Audio(String modo, float nivel_graves, bool pico_grave, f
   dmxCanais[6] = 0;
 
   // -------------------------------------------------------------------------
-  // A. DETECÇÃO DE EVENTO / REAÇÃO MALUCA NOS IMPACTOS
+  // A. PROCESSAMENTO RÍTMICO COM FILTRO ANTI-GLITCH (1 BATIDA = 1 IMPACTO)
   // -------------------------------------------------------------------------
-  if (pico_grave) {
-    indiceCor = (indiceCor + 1) % totalCores; // Troca a cor no bumbo
-    contadorBatidas++;
-    
-    // Dispara "Reação Maluca" temporária por 250ms
-    fimReacaoMaluca = agora + 260;
-    indicePadraoMaluco = (indicePadraoMaluco + 1) % totalPadroesMalucos;
+  bool kickReal = false;
+  if (pico_grave && (agora - ultimoKickValido >= COOLDOWN_KICK_MS)) {
+    kickReal = true;
+    ultimoKickValido = agora;
+    fimImpactoKick = agora + 220; // Impacto visual de 220ms
 
-    // A cada 8 batidas no fluxo normal, troca a grande animação de fundo
-    if (contadorBatidas >= 8) {
+    // Troca de cor cravada no compasso
+    indiceCor = (indiceCor + 1) % totalCores;
+    
+    // Troca de figura geométrica a cada 4 batidas reais (1 compasso 4/4 perfeito!)
+    contadorCompasso++;
+    if (contadorCompasso >= 4) {
       indicePadraoGrande = (indicePadraoGrande + 1) % totalPadroesGrandes;
-      contadorBatidas = 0;
+      indicePadraoReativo = (indicePadraoReativo + 1) % totalPadroesReativos;
+      contadorCompasso = 0;
     }
   }
 
@@ -162,46 +170,48 @@ void atualizarLaserDMX_Audio(String modo, float nivel_graves, bool pico_grave, f
   dmxCanais[3] = 0;
 
   // -------------------------------------------------------------------------
-  // B. SELEÇÃO DE PADRÃO: ANIMAÇÃO GRANDE vs REAÇÃO MALUCA
+  // B. ANIMAÇÃO GRANDE vs REAÇÃO DE IMPACTO
   // -------------------------------------------------------------------------
-  bool emReacao = (agora < fimReacaoMaluca);
+  bool emImpacto = (agora < fimImpactoKick);
 
-  if (emReacao) {
-    // REAÇÃO MALUCA: padrão complexo, flip horizontal rápido, rotação extrema
-    dmxCanais[4] = padroesMalucos[indicePadraoMaluco];
-    dmxCanais[7] = 245; // Rotação rápida burst
-    dmxCanais[8] = 180; // Flip horizontal que rebate o laser
+  if (emImpacto) {
+    // Impacto do Kick: Flip horizontal rápido e rotação acelerada
+    dmxCanais[4] = (contadorCompasso == 0) ? padroesReativos[indicePadraoReativo] : padroesGrandes[indicePadraoGrande];
+    dmxCanais[7] = 235; // Rotação rápida no ataque
+    dmxCanais[8] = 180; // Flip horizontal que rebate o laser no kick
   } else {
-    // ANIMAÇÃO GRANDE PADRÃO: fluxo majestoso, túneis e planos contínuos
+    // Fluxo Contínuo: Padrões grandes e rotação majestosa
     dmxCanais[4] = padroesGrandes[indicePadraoGrande];
-    dmxCanais[7] = (uint8_t)calib.velocidadeRotacao; // Rotação fluida suave
+    dmxCanais[7] = (uint8_t)calib.velocidadeRotacao;
     dmxCanais[8] = 64;  // Normal
   }
 
   // -------------------------------------------------------------------------
-  // C. TAMANHO AMPLO POR PADRÃO (ZOOM MINIMO GRANDE: 190 A 255)
+  // C. ENVELOPE DE TAMANHO SUAVE E AMPLO (180 A 255)
   // -------------------------------------------------------------------------
   float zoomAlvo = (float)calib.zoomMinimo + (nivel_graves * ((float)calib.zoomMaximo - (float)calib.zoomMinimo));
-  if (pico_grave) {
+  if (kickReal || emImpacto) {
     zoomAlvo = (float)calib.zoomMaximo;
   }
 
+  // Ataque instantâneo, decaimento rítmico musical
   if (zoomAlvo > zoomAtual) {
     zoomAtual = zoomAlvo;
   } else {
-    zoomAtual = max((float)calib.zoomMinimo, zoomAtual - (120.0f * deltaTempo));
+    zoomAtual = max((float)calib.zoomMinimo, zoomAtual - (130.0f * deltaTempo));
   }
 
   dmxCanais[5] = (uint8_t)constrain(zoomAtual, (float)calib.zoomMinimo, 255.0f);
 
   // -------------------------------------------------------------------------
-  // D. ONDULAÇÃO NO VOCAL & VARREDURA PANORÂMICA
+  // D. FILTRO SUAVE DE ONDULAÇÃO VOCAL (FLUIDO E ORGÂNICO)
   // -------------------------------------------------------------------------
-  float vocal_curva = constrain(pow(nivel_vocal, 0.70f), 0.0f, 1.0f);
+  vocalFiltrado = (vocalFiltrado * 0.75f) + (nivel_vocal * 0.25f);
+  float vocal_curva = constrain(pow(vocalFiltrado, 0.70f), 0.0f, 1.0f);
   dmxCanais[12] = (uint8_t)(vocal_curva * (float)calib.sensibilidadeVocal);
 
-  // Varredura espacial panorâmica elegante que cobre o ambiente
-  dmxCanais[10] = (uint8_t)(64 + sin(tempo_s * 0.5f) * 20); // Movimento X suave
+  // Varredura panorâmica suave
+  dmxCanais[10] = (uint8_t)(64 + sin(tempo_s * 0.4f) * 18);
   dmxCanais[11] = 64;
   dmxCanais[9] = 64;
 }
@@ -286,7 +296,7 @@ void atualizarPaletaGlobo(String modo, float nivel_vocal, float tempo_s) {
 }
 
 // ------------------------------------------------------------------------------
-// 7. PÁGINA WEB HTML / CSS / JS EMBUTIDA COM EXPORTADOR DE CONFIGS
+// 7. PÁGINA WEB HTML / CSS / JS EMBUTIDA
 // ------------------------------------------------------------------------------
 
 const char HTML_INDEX[] PROGMEM = R"rawliteral(
@@ -322,7 +332,7 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
 <body>
 <div class="container">
   <h1>⚡ Laser DMX Studio</h1>
-  <div class="subtitle">Animações Grandes + Reações no Beat + Exportador</div>
+  <div class="subtitle">Sincronismo Musical Calibrado (Anti-Glitch)</div>
 
   <div class="card">
     <div class="card-title">🎮 Modo de Operação</div>
@@ -335,20 +345,20 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
   <div class="card">
     <div class="card-title">⚙️ Parâmetros de Ritmo & Tamanho</div>
     <div class="slider-row">
-      <div class="slider-header"><span>Tamanho Mínimo (Animação Grande Padrão)</span><span class="slider-val" id="vZoomMin">190</span></div>
-      <input type="range" min="100" max="240" value="190" oninput="updateCalib('zmin', this.value, 'vZoomMin')">
+      <div class="slider-header"><span>Tamanho Mínimo (Animação Grande)</span><span class="slider-val" id="vZoomMin">180</span></div>
+      <input type="range" min="100" max="240" value="180" oninput="updateCalib('zmin', this.value, 'vZoomMin')">
     </div>
     <div class="slider-row">
-      <div class="slider-header"><span>Tamanho Máximo (Explosão no Bumbo)</span><span class="slider-val" id="vZoomMax">255</span></div>
+      <div class="slider-header"><span>Tamanho Máximo (Pico do Bumbo)</span><span class="slider-val" id="vZoomMax">255</span></div>
       <input type="range" min="180" max="255" value="255" oninput="updateCalib('zmax', this.value, 'vZoomMax')">
     </div>
     <div class="slider-row">
-      <div class="slider-header"><span>Sensibilidade Vocal (Ondulação X)</span><span class="slider-val" id="vVocal">190</span></div>
-      <input type="range" min="0" max="255" value="190" oninput="updateCalib('voc', this.value, 'vVocal')">
+      <div class="slider-header"><span>Sensibilidade Vocal (Ondulação X)</span><span class="slider-val" id="vVocal">175</span></div>
+      <input type="range" min="0" max="255" value="175" oninput="updateCalib('voc', this.value, 'vVocal')">
     </div>
     <div class="slider-row">
-      <div class="slider-header"><span>Velocidade de Rotação 3D</span><span class="slider-val" id="vRot">180</span></div>
-      <input type="range" min="100" max="255" value="180" oninput="updateCalib('rot', this.value, 'vRot')">
+      <div class="slider-header"><span>Velocidade de Rotação 3D</span><span class="slider-val" id="vRot">170</span></div>
+      <input type="range" min="100" max="255" value="170" oninput="updateCalib('rot', this.value, 'vRot')">
     </div>
   </div>
 
@@ -358,7 +368,7 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
       <button onclick="setAtalho(70)">🌀 Túnel Grande</button>
       <button onclick="setAtalho(110)">📐 Plano 3D</button>
       <button onclick="setAtalho(130)">✨ Espiral</button>
-      <button onclick="setAtalho(25)">⚡ Zigzag Reativo</button>
+      <button onclick="setAtalho(25)">⚡ Zigzag</button>
       <button class="danger" onclick="setBlackout()">⬛ Blackout</button>
     </div>
 
@@ -379,8 +389,8 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
       <input type="range" min="0" max="255" value="210" oninput="setDMX(6, this.value, 'vCH6')">
     </div>
     <div class="slider-row">
-      <div class="slider-header"><span>CH8: Rotação</span><span class="slider-val" id="vCH8">180</span></div>
-      <input type="range" min="0" max="255" value="180" oninput="setDMX(8, this.value, 'vCH8')">
+      <div class="slider-header"><span>CH8: Rotação</span><span class="slider-val" id="vCH8">170</span></div>
+      <input type="range" min="0" max="255" value="170" oninput="setDMX(8, this.value, 'vCH8')">
     </div>
     <div class="slider-row">
       <div class="slider-header"><span>CH13: Onda X</span><span class="slider-val" id="vCH13">0</span></div>
@@ -401,8 +411,8 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
 
 <script>
 let configObj = {
-  zmin: 190, zmax: 255, voc: 190, rot: 180,
-  dmx: { ch1: 50, ch3: 12, ch5: 70, ch6: 210, ch8: 180, ch13: 0 }
+  zmin: 180, zmax: 255, voc: 175, rot: 170,
+  dmx: { ch1: 50, ch3: 12, ch5: 70, ch6: 210, ch8: 170, ch13: 0 }
 };
 
 function renderJson() {
@@ -531,15 +541,14 @@ void setup() {
   Serial.begin(115200);
   delay(500);
   Serial.println("\n==================================================");
-  Serial.println(" Audio to Light - ESP32-C3 Studio (Grandes + Reativos)");
+  Serial.println(" Audio to Light - ESP32-C3 Studio v4.0 (Anti-Glitch)");
   Serial.println("==================================================");
 
-  // Carrega configurações salvas na Flash se existirem
   prefs.begin("laser_cfg", true);
-  calib.zoomMinimo = prefs.getInt("zmin", 190);
+  calib.zoomMinimo = prefs.getInt("zmin", 180);
   calib.zoomMaximo = prefs.getInt("zmax", 255);
-  calib.sensibilidadeVocal = prefs.getInt("voc", 190);
-  calib.velocidadeRotacao = prefs.getInt("rot", 180);
+  calib.sensibilidadeVocal = prefs.getInt("voc", 175);
+  calib.velocidadeRotacao = prefs.getInt("rot", 170);
   prefs.end();
 
   pinMode(PIN_STROBE_BRANCO, OUTPUT);
@@ -668,7 +677,7 @@ void loop() {
           if (nivel_vocal < 0.05f) nivel_vocal = nivel_med;
           nivel_vocal = constrain(nivel_vocal, 0.0f, 1.0f);
 
-          // 1. ATUALIZA LASER DMX (Grandes Animações Contínuas + Reações Malucas no Beat)
+          // 1. ATUALIZA LASER DMX (Sincronismo Musical 4/4 Calibrado)
           if (modoOperacaoWeb == 0) {
             atualizarLaserDMX_Audio(modo_atual, nivel_grave, pico_grave, nivel_vocal, tempo_s, deltaTempo, agora);
           }

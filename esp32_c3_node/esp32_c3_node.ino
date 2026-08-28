@@ -1,7 +1,7 @@
 /*
  * ==============================================================================
  * PROJETO: Audio to Light - NÓ RECEPTOR ESP32-C3 SUPER MINI (COM DMX512 + WEB STUDIO)
- * VERSÃO: 5.0 (Seleção Dinâmica de Listas de Padrões para Bumbo e Vocal + Web GUI)
+ * VERSÃO: 5.1 (Gatilho Silábico Rápido: Glitch em cada pedaço de palavra/sílaba)
  * ==============================================================================
  */
 
@@ -41,13 +41,12 @@ bool dmxInicializado = false;
 #define PIN_LED_ONBOARD      8   // LED de status onboard
 
 // ------------------------------------------------------------------------------
-// 3. BUFFER DMX512 & ESTRUTURAS DE LISTAS DE PADRÕES CUSTOMIZÁVEIS
+// 3. BUFFER DMX512 & LISTAS DE PADRÕES CUSTOMIZÁVEIS
 // ------------------------------------------------------------------------------
 uint8_t dmxCanais[16];
 unsigned long ultimoEnvioDmx = 0;
 int modoOperacaoWeb = 0; // 0 = Áudio Automático, 1 = Manual Web
 
-// LISTAS DE PADRÕES DINÂMICAS CONFIGURÁVEIS PELA WEB (Máximo de 20 padrões em cada)
 #define MAX_PADROES 20
 
 uint8_t listaBumbo[MAX_PADROES] = {70, 90, 110, 130, 40, 55};
@@ -64,8 +63,9 @@ struct ParametrosCalibracao {
   int zoomMaximo = 255;
   int sensibilidadeVocal = 175;
   int velocidadeRotacao = 170;
-  int batidasPorTroca = 4;      // Troca padrão a cada 4 batidas
-  float thresholdVocal = 0.28f; // Gatilho de início de voz
+  int batidasPorTroca = 4;        // Troca a cada 4 batidas
+  float thresholdVocal = 0.32f;   // Gatilho do início de cada sílaba
+  int duracaoGlitchMs = 95;       // Duração rápida do glitch por sílaba (60ms a 140ms)
 } calib;
 
 // Cores Sólidas de Alto Contraste
@@ -73,16 +73,15 @@ const uint8_t coresLaser[] = {12, 22, 32, 42, 52, 62, 72};
 const int totalCores = sizeof(coresLaser) / sizeof(coresLaser[0]);
 int indiceCor = 0;
 
-// Variáveis de Controle Rítmico e Vocal
+// Controle Rítmico e Silábico
 unsigned long ultimoKickValido = 0;
-const unsigned long COOLDOWN_KICK_MS = 260; // Filtro anti-glitch
+const unsigned long COOLDOWN_KICK_MS = 260; // Filtro anti-glitch no kick
 int contadorBatidasBumbo = 0;
 
 float zoomAtual = 180.0f;
-float vocalFiltrado = 0.0f;
-bool vozAtiva = false;
-bool vozEstavaAtiva = false;
-unsigned long fimSustentacaoVoz = 0;
+float ultimoNivelVocal = 0.0f;
+unsigned long fimGlitchSilaba = 0;
+unsigned long ultimoDisparoSilaba = 0;
 unsigned long fimImpactoKick = 0;
 
 // ------------------------------------------------------------------------------
@@ -116,7 +115,7 @@ void inicializarDMX() {
   pinMode(PIN_DMX_TX, OUTPUT);
   digitalWrite(PIN_DMX_TX, HIGH);
   memset(dmxCanais, 0, sizeof(dmxCanais));
-  dmxCanais[0] = 50; // Luz sempre aberta e ativa
+  dmxCanais[0] = 50; // Luz sempre aberta e ativa (100% contínua)
   dmxCanais[1] = 128;
   dmxCanais[14] = 255;
   dmxInicializado = true;
@@ -163,8 +162,8 @@ String listaParaString(uint8_t* lista, int total) {
 }
 
 void atualizarLaserDMX_Audio(String modo, float nivel_graves, bool pico_grave, float nivel_vocal, float tempo_s, float deltaTempo, unsigned long agora) {
-  // O laser NUNCA desliga: fica sempre aceso em CH1 = 50
-  dmxCanais[0] = 50;  // Manual Console contínuo
+  // Laser 100% aceso
+  dmxCanais[0] = 50;  // Manual Console
   dmxCanais[1] = 128;
   dmxCanais[13] = 0;
   dmxCanais[14] = 255;
@@ -172,39 +171,36 @@ void atualizarLaserDMX_Audio(String modo, float nivel_graves, bool pico_grave, f
   dmxCanais[6] = 0;
 
   // -------------------------------------------------------------------------
-  // A. DETECÇÃO E FILTRAGEM VOCAL (Gatilho da Voz)
+  // A. GATILHO SILÁBICO (GLITCH EM CADA PEDAÇO DE PALAVRA / SÍLABA)
   // -------------------------------------------------------------------------
-  vocalFiltrado = (vocalFiltrado * 0.70f) + (nivel_vocal * 0.30f);
+  // Detecta o ataque súbito de uma sílaba (delta positivo ou nível acima do threshold)
+  float deltaVocal = nivel_vocal - ultimoNivelVocal;
+  ultimoNivelVocal = nivel_vocal;
 
-  if (vocalFiltrado >= calib.thresholdVocal) {
-    fimSustentacaoVoz = agora + 350; // Sustenta o padrão de voz por 350ms
-    if (!vozEstavaAtiva && totalListaVocal > 0) {
-      // Nova frase vocal iniciada: pula para o próximo padrão da lista de vocal!
-      indiceVocal = (indiceVocal + 1) % totalListaVocal;
-    }
-    vozEstavaAtiva = true;
-  } else {
-    if (agora > fimSustentacaoVoz) {
-      vozEstavaAtiva = false;
+  bool novaSilaba = (nivel_vocal >= calib.thresholdVocal && (deltaVocal > 0.08f || agora - ultimoDisparoSilaba > 140));
+
+  if (novaSilaba && (agora - ultimoDisparoSilaba >= 75)) {
+    ultimoDisparoSilaba = agora;
+    fimGlitchSilaba = agora + calib.duracaoGlitchMs; // Glitch rápido de ~95ms na sílaba!
+    if (totalListaVocal > 0) {
+      indiceVocal = (indiceVocal + 1) % totalListaVocal; // Alterna o glitch a cada pedaço de palavra
     }
   }
 
-  vozAtiva = (agora < fimSustentacaoVoz);
+  bool silabaAtiva = (agora < fimGlitchSilaba);
 
   // -------------------------------------------------------------------------
-  // B. PROCESSAMENTO DO BUMBO (Rotação Rítmica por Compasso)
+  // B. PROCESSAMENTO DO BUMBO (Rotação Musical por Compasso)
   // -------------------------------------------------------------------------
   bool kickReal = false;
   if (pico_grave && (agora - ultimoKickValido >= COOLDOWN_KICK_MS)) {
     kickReal = true;
     ultimoKickValido = agora;
-    fimImpactoKick = agora + 220;
+    fimImpactoKick = agora + 200;
 
-    // Troca de cor no bumbo
-    indiceCor = (indiceCor + 1) % totalCores;
+    indiceCor = (indiceCor + 1) % totalCores; // Troca de cor no bumbo
 
-    // Se a voz NÃO estiver ativa, conta batidas para avançar os padrões do bumbo
-    if (!vozAtiva && totalListaBumbo > 0) {
+    if (totalListaBumbo > 0) {
       contadorBatidasBumbo++;
       if (contadorBatidasBumbo >= calib.batidasPorTroca) {
         indiceBumbo = (indiceBumbo + 1) % totalListaBumbo;
@@ -217,23 +213,21 @@ void atualizarLaserDMX_Audio(String modo, float nivel_graves, bool pico_grave, f
   dmxCanais[3] = 0;
 
   // -------------------------------------------------------------------------
-  // C. SELEÇÃO DE PADRÃO: LISTA VOCAL vs LISTA BUMBO
+  // C. SELEÇÃO DE PADRÃO: GLITCH NA SÍLABA vs PADRÃO DO BUMBO
   // -------------------------------------------------------------------------
-  if (vozAtiva && totalListaVocal > 0) {
-    // VOZ CANTANDO: Assume o padrão da Lista de Vocal
+  if (silabaAtiva && totalListaVocal > 0) {
+    // SÍLABA FALADA ("CUR", "TE", "BAI", "LÃO"): Dispara o Glitch da Lista de Vocal
     dmxCanais[4] = listaVocal[indiceVocal];
-    dmxCanais[7] = 190; // Rotação viva
+    dmxCanais[7] = 230; // Rotação rápida na sílaba
     dmxCanais[8] = 64;
-    // Ondulação vocal líquida e expressiva
-    float vocal_curva = constrain(pow(vocalFiltrado, 0.70f), 0.0f, 1.0f);
-    dmxCanais[12] = (uint8_t)(vocal_curva * (float)calib.sensibilidadeVocal);
+    dmxCanais[12] = (uint8_t)(nivel_vocal * (float)calib.sensibilidadeVocal); // Ondulação senoidal
   } else {
-    // SEM VOZ: Mantém os Padrões da Lista do Bumbo
+    // ENTRE SÍLABAS / FUNDO: Retorna imediatamente para o Padrão do Bumbo
     if (totalListaBumbo > 0) {
       dmxCanais[4] = listaBumbo[indiceBumbo];
     }
     dmxCanais[7] = (uint8_t)calib.velocidadeRotacao;
-    dmxCanais[8] = (kickReal) ? 180 : 64; // Flip rítmico no bumbo
+    dmxCanais[8] = (kickReal) ? 180 : 64; // Flip no bumbo
     dmxCanais[12] = 0;
   }
 
@@ -241,19 +235,19 @@ void atualizarLaserDMX_Audio(String modo, float nivel_graves, bool pico_grave, f
   // D. ZOOM / TAMANHO AMPLO (180 A 255)
   // -------------------------------------------------------------------------
   float zoomAlvo = (float)calib.zoomMinimo + (nivel_graves * ((float)calib.zoomMaximo - (float)calib.zoomMinimo));
-  if (kickReal || (agora < fimImpactoKick)) {
+  if (kickReal || (agora < fimImpactoKick) || silabaAtiva) {
     zoomAlvo = (float)calib.zoomMaximo;
   }
 
   if (zoomAlvo > zoomAtual) {
     zoomAtual = zoomAlvo;
   } else {
-    zoomAtual = max((float)calib.zoomMinimo, zoomAtual - (130.0f * deltaTempo));
+    zoomAtual = max((float)calib.zoomMinimo, zoomAtual - (140.0f * deltaTempo));
   }
 
   dmxCanais[5] = (uint8_t)constrain(zoomAtual, (float)calib.zoomMinimo, 255.0f);
 
-  // Varredura panorâmica suave no espaço
+  // Varredura suave
   dmxCanais[10] = (uint8_t)(64 + sin(tempo_s * 0.4f) * 18);
   dmxCanais[11] = 64;
   dmxCanais[9] = 64;
@@ -377,7 +371,7 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
 <body>
 <div class="container">
   <h1>⚡ Laser DMX Studio Pro</h1>
-  <div class="subtitle">Seletor de Listas: Rotação no Bumbo & Reação no Vocal</div>
+  <div class="subtitle">Glitch Silábico na Voz & Rotação no Bumbo</div>
 
   <div class="card">
     <div class="card-title">🎮 Modo de Operação</div>
@@ -388,8 +382,8 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
   </div>
 
   <div class="card">
-    <div class="card-title">🥁 1. Lista de Padrões do Bumbo (Rotação Musical)</div>
-    <div style="font-size: 0.8rem; color: #94a3b8; margin-bottom: 6px;">Clique nos padrões para ativar/desativar da rotação do bumbo:</div>
+    <div class="card-title">🥁 1. Lista de Padrões do Bumbo (Fundo Musical)</div>
+    <div style="font-size: 0.8rem; color: #94a3b8; margin-bottom: 6px;">Padrões de fundo contínuos que alternam no bumbo:</div>
     <div class="tag-box" id="tagsBumbo"></div>
     <input type="text" id="inBumbo" placeholder="Ex: 70,90,110,130,40" onchange="salvarListas()">
     
@@ -404,14 +398,19 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
   </div>
 
   <div class="card">
-    <div class="card-title">🎤 2. Lista de Padrões do Vocal / Glitch (Gatilho da Voz)</div>
-    <div style="font-size: 0.8rem; color: #94a3b8; margin-bottom: 6px;">Padrões que entram imediatamente quando o cantor canta:</div>
+    <div class="card-title">🎤 2. Lista de Padrões do Glitch Silábico (Cada Fonema da Voz)</div>
+    <div style="font-size: 0.8rem; color: #94a3b8; margin-bottom: 6px;">Padrões que disparam em cada pedaço de palavra cantada:</div>
     <div class="tag-box" id="tagsVocal"></div>
     <input type="text" id="inVocal" placeholder="Ex: 25,85,120,160,190" onchange="salvarListas()">
 
     <div class="slider-row" style="margin-top: 10px;">
-      <div class="slider-header"><span>Gatilho de Sensibilidade Vocal</span><span class="slider-val" id="vThresh">0.28</span></div>
-      <input type="range" min="10" max="80" value="28" oninput="updateThresh(this.value)">
+      <div class="slider-header"><span>Gatilho de Sensibilidade Vocal</span><span class="slider-val" id="vThresh">0.32</span></div>
+      <input type="range" min="10" max="80" value="32" oninput="updateThresh(this.value)">
+    </div>
+
+    <div class="slider-row">
+      <div class="slider-header"><span>Duração do Flash Silábico</span><span class="slider-val" id="vGlitch">95 ms</span></div>
+      <input type="range" min="50" max="180" value="95" oninput="updateGlitch(this.value)">
     </div>
   </div>
 
@@ -422,12 +421,8 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
       <input type="range" min="100" max="240" value="180" oninput="updateCalib('zmin', this.value, 'vZoomMin')">
     </div>
     <div class="slider-row">
-      <div class="slider-header"><span>Tamanho Máximo (Pico do Bumbo)</span><span class="slider-val" id="vZoomMax">255</span></div>
+      <div class="slider-header"><span>Tamanho Máximo (Pico do Bumbo/Sílaba)</span><span class="slider-val" id="vZoomMax">255</span></div>
       <input type="range" min="180" max="255" value="255" oninput="updateCalib('zmax', this.value, 'vZoomMax')">
-    </div>
-    <div class="slider-row">
-      <div class="slider-header"><span>Sensibilidade de Ondulação Vocal</span><span class="slider-val" id="vVocal">175</span></div>
-      <input type="range" min="0" max="255" value="175" oninput="updateCalib('voc', this.value, 'vVocal')">
     </div>
   </div>
 
@@ -513,6 +508,11 @@ function updateThresh(v) {
   fetch('/calib?thr=' + real);
 }
 
+function updateGlitch(v) {
+  document.getElementById('vGlitch').innerText = v + ' ms';
+  fetch('/calib?glt=' + v);
+}
+
 function updateCalib(param, val, labelId) {
   document.getElementById(labelId).innerText = val;
   fetch('/calib?' + param + '=' + val);
@@ -589,6 +589,7 @@ void handleCalib() {
   if (server.hasArg("rot"))  calib.velocidadeRotacao = server.arg("rot").toInt();
   if (server.hasArg("bat"))  calib.batidasPorTroca = server.arg("bat").toInt();
   if (server.hasArg("thr"))  calib.thresholdVocal = server.arg("thr").toFloat();
+  if (server.hasArg("glt"))  calib.duracaoGlitchMs = server.arg("glt").toInt();
   server.sendHeader("Connection", "close");
   server.send(200, "text/plain", "OK");
 }
@@ -601,6 +602,7 @@ void handleSalvar() {
   prefs.putInt("rot", calib.velocidadeRotacao);
   prefs.putInt("bat", calib.batidasPorTroca);
   prefs.putFloat("thr", calib.thresholdVocal);
+  prefs.putInt("glt", calib.duracaoGlitchMs);
   prefs.putString("lstB", listaParaString(listaBumbo, totalListaBumbo));
   prefs.putString("lstV", listaParaString(listaVocal, totalListaVocal));
   prefs.end();
@@ -615,17 +617,17 @@ void setup() {
   Serial.begin(115200);
   delay(500);
   Serial.println("\n==================================================");
-  Serial.println(" Audio to Light - ESP32-C3 Studio Pro v5.0");
+  Serial.println(" Audio to Light - ESP32-C3 Studio v5.1 (Syllabic Glitch)");
   Serial.println("==================================================");
 
-  // Carrega configurações e listas salvas na NVS Flash
   prefs.begin("laser_cfg", true);
   calib.zoomMinimo = prefs.getInt("zmin", 180);
   calib.zoomMaximo = prefs.getInt("zmax", 255);
   calib.sensibilidadeVocal = prefs.getInt("voc", 175);
   calib.velocidadeRotacao = prefs.getInt("rot", 170);
   calib.batidasPorTroca = prefs.getInt("bat", 4);
-  calib.thresholdVocal = prefs.getFloat("thr", 0.28f);
+  calib.thresholdVocal = prefs.getFloat("thr", 0.32f);
+  calib.duracaoGlitchMs = prefs.getInt("glt", 95);
 
   String strB = prefs.getString("lstB", "70,90,110,130,40,55");
   parseListaString(strB, listaBumbo, totalListaBumbo);
@@ -663,7 +665,6 @@ void setup() {
   digitalWrite(PIN_LED_ONBOARD, LOW);
   Serial.printf("\n[Wi-Fi] Conectado! IP do ESP32: %s\n", WiFi.localIP().toString().c_str());
 
-  // INICIALIZA DMX APÓS WI-FI (COM FEIXE SEMPRE ATIVO)
   inicializarDMX();
 
   // ROTAS WEB
@@ -675,7 +676,6 @@ void setup() {
   server.begin();
   Serial.printf("[WEB] Painel de Controle ativo em: http://%s\n", WiFi.localIP().toString().c_str());
 
-  // SOCKET UDP
   udp.begin(UDP_PORT);
   Serial.printf("[UDP] Escutando porta %d...\n", UDP_PORT);
 }
@@ -696,7 +696,6 @@ void loop() {
 
   atualizarServo(agoraUs);
 
-  // Envio contínuo DMX512 a ~30Hz (a cada 33ms)
   if (agora - ultimoEnvioDmx >= 33 && dmxInicializado) {
     ultimoEnvioDmx = agora;
     enviarFrameDMX();
@@ -708,7 +707,6 @@ void loop() {
     return;
   }
 
-  // LEITURA DOS PACOTES UDP
   int packetSize = udp.parsePacket();
   if (packetSize) {
     int len = udp.read(packetBuffer, sizeof(packetBuffer) - 1);
@@ -759,7 +757,7 @@ void loop() {
           if (nivel_vocal < 0.05f) nivel_vocal = nivel_med;
           nivel_vocal = constrain(nivel_vocal, 0.0f, 1.0f);
 
-          // 1. ATUALIZA LASER DMX (Com Listas Customizadas de Bumbo e Vocal)
+          // 1. ATUALIZA LASER DMX COM GATILHO SILÁBICO RÁPIDO
           if (modoOperacaoWeb == 0) {
             atualizarLaserDMX_Audio(modo_atual, nivel_grave, pico_grave, nivel_vocal, tempo_s, deltaTempo, agora);
           }
